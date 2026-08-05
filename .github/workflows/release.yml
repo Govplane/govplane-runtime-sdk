@@ -22,7 +22,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write        # required for provenance, even when using a token
+  id-token: write        # the credential itself: provenance and trusted publishing both need it
 
 jobs:
   publish:
@@ -31,10 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `registry-url:` on purpose. With it, setup-node writes an .npmrc
+      # containing `_authToken=${NODE_AUTH_TOKEN}` and exports that variable as
+      # the literal placeholder `XXXXX-XXXXX-XXXXX-XXXXX`. npm then finds a
+      # credential, uses it instead of performing the OIDC exchange, and the
+      # publish fails with `404 on PUT` — which names the package rather than the
+      # cause. Without it npm has no credential, so trusted publishing engages.
+      # The default registry is registry.npmjs.org and no package overrides it.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
           cache: npm
 
       # Provenance needs npm 9.5.0 or later. Node 22 ships something newer, but
