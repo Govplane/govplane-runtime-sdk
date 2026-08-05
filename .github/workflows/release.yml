@@ -1,15 +1,20 @@
 name: Release
 
-# Publishes to npm with an automation token, with provenance attached.
+# Publishes to npm through **trusted publishing**, with provenance attached.
 #
-# Requires an `NPM_TOKEN` secret on the repository — an npm **granular access
-# token**, scoped to this package only, with read and write permission and an
-# expiry set. A classic automation token works but grants far more than this
-# workflow needs.
+# There is no publish token. npm exchanges the workflow's OIDC identity for a
+# short-lived credential, which is why `id-token: write` is required below and
+# why no `NPM_TOKEN` secret appears anywhere in this file. Nothing long-lived
+# exists to leak, and the publish satisfies npm's 2FA requirement — a stored
+# token no longer does, since npm began restricting tokens that bypass 2FA.
 #
-# Provenance still applies: `id-token: write` and `--provenance` below are what
-# produce the "Built and signed on GitHub Actions" badge. With a token they are
-# explicit, where trusted publishing would supply both on its own.
+# Configured on npmjs.com under the package's Trusted Publisher settings, naming
+# this repository and this workflow file. If that entry is missing or names a
+# different workflow, `npm publish` fails with a 404 or an authentication error
+# rather than anything that mentions OIDC — check there first.
+#
+# Requires npm 11.5.1 or later, which the pinned `npm@latest` step below
+# guarantees regardless of what the runner image ships.
 
 on:
   push:
@@ -67,31 +72,18 @@ jobs:
       # scope you do not own returns `404 on PUT`, because npm will not reveal
       # whether it exists, and that error names the package rather than the
       # cause. This step says the cause out loud.
+      #
+      # There is no identity to check before publishing: trusted publishing has
+      # no credential until `npm publish` performs the OIDC exchange, so
+      # `npm whoami` reports nobody. The checks below use `npm view`, which needs
+      # no authentication for a public package.
       - name: Inspect the registry
         id: registry
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          SCOPE=$(echo "$NAME" | sed -n 's|^@\([^/]*\)/.*|\1|p')
           echo "name=$NAME"       >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          # An unusable token is unambiguous, so fail on it immediately.
-          if ! WHO=$(npm whoami 2>&1); then
-            echo "::error::NPM_TOKEN is missing, expired or invalid. npm said: $WHO"
-            exit 1
-          fi
-          echo "Authenticated as: $WHO"
-
-          if [ -n "$SCOPE" ] && [ "$WHO" != "$SCOPE" ]; then
-            # A scope is either an organisation or a user of the same name. If it
-            # is neither, publish will 404. Warn rather than fail: `npm org ls`
-            # can be refused for reasons unrelated to existence, and blocking a
-            # valid release on a heuristic is worse than a confusing publish.
-            if ! npm org ls "$SCOPE" >/dev/null 2>&1; then
-              echo "::warning::Cannot confirm access to the @$SCOPE scope as $WHO. If the publish below fails with a 404 on PUT, that is why: create the @$SCOPE organisation on npmjs.com and add $WHO to it with publish rights, or rename the package to a scope you own."
-            fi
-          fi
 
           if npm view "$NAME" version >/dev/null 2>&1; then
             echo "first=false" >> "$GITHUB_OUTPUT"
@@ -108,8 +100,6 @@ jobs:
             echo "first=true" >> "$GITHUB_OUTPUT"
             echo "::notice::$NAME is not on the registry. This publish will create it."
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       # `--access public` is what creates a *scoped* package as public. Without
       # it npm makes the first publish private, which fails on a free account
@@ -124,10 +114,11 @@ jobs:
         with:
           args: --severity-threshold=high
 
+      # No `env:` block. npm exchanges this job's OIDC identity for a short-lived
+      # credential at publish time; supplying a token here would take precedence
+      # and put the release back on the path npm is restricting.
       - name: Publish
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summarise
         if: success()
@@ -138,8 +129,9 @@ jobs:
             if [ "${{ steps.registry.outputs.first }}" = "true" ]; then
               echo "Created the package on npm for the first time."
               echo
-              echo "**Next:** replace the publishing token with a granular one scoped to"
-              echo "this package — it could not be scoped before the package existed."
+              echo "**Next:** confirm the Trusted Publisher entry on npmjs.com still names"
+              echo "this repository and \`release.yml\`, so later releases keep publishing"
+              echo "without a token."
             else
               echo "Published a new version of an existing package."
             fi
