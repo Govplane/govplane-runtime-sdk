@@ -11,13 +11,13 @@
     "sdk",
     "policy-engine"
   ],
-  "homepage": "https://github.com/govplane/govplane-runtime-sdk#readme",
+  "homepage": "https://github.com/Govplane/govplane-runtime-sdk#readme",
   "bugs": {
-    "url": "https://github.com/govplane/govplane-runtime-sdk/issues"
+    "url": "https://github.com/Govplane/govplane-runtime-sdk/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/govplane/govplane-runtime-sdk.git"
+    "url": "git+https://github.com/Govplane/govplane-runtime-sdk.git"
   },
   "license": "MIT",
   "author": "Govplane",
