@@ -71,6 +71,10 @@ jobs:
             import { createLocalClient, canonicalPayload } from './dist/index.js';
             import { writeFileSync } from 'node:fs';
 
+            // A policy with a real rule, because a policy's default only speaks
+            // for targets that policy governs — and it governs the targets its
+            // rules name. A rule-less policy decides nothing.
+            const target = { service: 'a', resource: 'b', action: 'c' };
             const bundle = {
               schemaVersion: 1,
               env: 'prod',
@@ -78,7 +82,14 @@ jobs:
                 policyKey: 'smoke',
                 activeVersion: 1,
                 defaults: { effect: 'allow' },
-                rules: [],
+                rules: [{
+                  id: 'deny-when-high',
+                  status: 'active',
+                  priority: 100,
+                  target,
+                  when: { op: 'gte', path: 'ctx.n', value: 5 },
+                  effect: { type: 'deny' },
+                }],
               }],
             };
 
@@ -88,12 +99,23 @@ jobs:
               allowUnsigned: true,
             });
 
-            const decision = client.evaluate({
-              target: { service: 'a', resource: 'b', action: 'c' },
-            });
-            if (decision.decision !== 'allow') {
-              throw new Error('unexpected decision: ' + JSON.stringify(decision));
-            }
+            const expect = (label, actual, wanted) => {
+              if (actual.decision !== wanted) {
+                throw new Error(label + ': wanted ' + wanted + ', got ' + JSON.stringify(actual));
+              }
+            };
+
+            // The rule fires.
+            expect('rule', client.evaluate({ target, context: { n: 9 } }), 'deny');
+            // In scope, rule did not fire, so the policy's own default stands.
+            expect('default', client.evaluate({ target, context: { n: 0 } }), 'allow');
+            // No policy governs this target, so deny by default.
+            expect(
+              'ungoverned',
+              client.evaluate({ target: { service: 'x', resource: 'y', action: 'z' } }),
+              'deny',
+            );
+
             if (canonicalPayload(bundle).length === 0) {
               throw new Error('canonicalPayload produced nothing');
             }
