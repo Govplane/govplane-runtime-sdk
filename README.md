@@ -1,0 +1,257 @@
+# @govplane/runtime-sdk
+
+Evaluate Govplane policy bundles in your application — from a file on disk, or
+from Govplane Cloud.
+
+Eliminate 'magic ifs' and control your application in a predictable, controlled, secure and auditable way.
+
+```bash
+npm install @govplane/runtime-sdk
+```
+
+Zero runtime dependencies. Node.js 20.19 or later.
+
+## ESM and CommonJS
+
+The package ships **one** build, in ESM. Both module systems load that same file:
+
+```js
+import { createLocalClient } from '@govplane/runtime-sdk';        // ESM
+const { createLocalClient } = require('@govplane/runtime-sdk');   // CommonJS
+```
+
+`require()` of an ES module is supported from Node 20.19 and 22.12 onward, which
+is why those are the floor. There is no separate CommonJS build on purpose: a
+package that ships both can end up loaded twice in one process, and then classes
+are no longer shared — an error thrown by one copy fails an `instanceof` check
+against the other. With a single file that cannot happen, and the SDK's error
+classes are meant to be checked:
+
+```js
+if (error instanceof BundleValidationError) { /* … */ }
+```
+
+On Node older than 20.19, `require()` fails with `ERR_REQUIRE_ESM`. Load it
+through a dynamic import instead:
+
+```js
+async function start() {
+  const { createLocalClient } = await import('@govplane/runtime-sdk');
+  return createLocalClient({ bundlePath: './policy-bundle.json' });
+}
+```
+
+TypeScript users compiling to CommonJS need TypeScript 5.8 or later with
+`"module": "nodenext"` for `require()` of an ES module to typecheck.
+
+## Two ways in
+
+### Local — no account, no credentials, no network
+
+```ts
+import { createLocalClient } from '@govplane/runtime-sdk';
+
+const govplane = await createLocalClient({
+  bundlePath: './policy-bundle.json',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey: process.env.GOVPLANE_PUBLIC_KEY },
+});
+
+const decision = govplane.evaluate({
+  target: { service: 'auth', resource: 'login', action: 'authenticate' },
+  context: { failedAttempts: 6 },
+});
+
+if (decision.decision === 'deny') {
+  // …
+}
+```
+
+Build the bundle with the CLI, sign it, ship it however you ship configuration:
+
+```bash
+npm install --global @govplane/cli @govplane/toolkit
+govplane build --signed
+```
+
+Nothing about this path touches Govplane infrastructure — at build time or at
+runtime.
+
+### Remote — Govplane Cloud
+
+```ts
+import { createRemoteClient } from '@govplane/runtime-sdk';
+
+const govplane = await createRemoteClient({
+  baseUrl: process.env.GOVPLANE_URL,
+  runtimeKey: process.env.GOVPLANE_RUNTIME_KEY,
+  orgId: 'org_…',
+  projectId: 'proj_…',
+  env: 'prod',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey: process.env.GOVPLANE_PUBLIC_KEY },
+  poll: { intervalMs: 5000 },
+});
+```
+
+Adds delivery — polling, ETag revalidation, backoff, degraded-mode reporting.
+Everything else is the same code.
+
+## The client
+
+Both factories return the same interface:
+
+```ts
+govplane.evaluate({ target, context });
+govplane.evaluateWithTrace({ target, context }, { level: 'full' });
+govplane.bundle();     // the bundle currently in force
+govplane.status();     // origin, version, checksum, signature, policy count
+await govplane.reload();
+govplane.close();
+```
+
+A client always holds a verified bundle: the first load happens before
+construction, so `evaluate()` can never be called against nothing.
+
+## Decisions
+
+```ts
+{ decision: 'allow' | 'deny' | 'kill_switch' | 'throttle' | 'custom',
+  reason: 'rule' | 'default',
+  policyKey?: string,
+  ruleId?: string }
+```
+
+`ruleId` is present when a rule decided it, and absent when a policy default
+did. Effect precedence is `kill_switch > deny > throttle > allow > custom`, then
+priority descending — a `kill_switch` at priority 1 beats a `deny` at 100.
+
+When nothing matches and no policy offers a default, the decision is
+**deny by default**.
+
+## Verification
+
+Signature verification is not optional by accident. A bundle decides who may do
+what, so the SDK will not evaluate one whose provenance it cannot establish
+unless you say so in writing:
+
+```ts
+await createLocalClient({ bundlePath: './policy-bundle.json', allowUnsigned: true });
+```
+
+| Algorithm | Local bundles | Cloud bundles |
+| --------- | ------------- | ------------- |
+| `ECDSA_SHA_256` | ✅ | ✅ |
+| `HMAC_SHA256` | ✅ | ❌ |
+
+HMAC is refused from Govplane Cloud deliberately. Verifying an HMAC signature
+means holding the key that produced it, and a cloud signature is made inside a
+FIPS 140-3 Level 3 HSM by a key that never leaves it. A shared secret would
+defeat that. For a bundle you signed yourself with the CLI, you own both halves
+and HMAC is fine.
+
+**Ed25519 is not supported.** It was accepted by the 1.x isolated-mode verifier,
+but nothing has ever produced it and AWS KMS cannot. A bundle carrying an
+Ed25519 signature is rejected with a message saying so.
+
+### What a signature does and does not tell you
+
+A verified signature proves the bundle has not changed since it was signed by
+the key you configured. It says nothing about *where* it was signed. A bundle
+signed by `govplane sign` on a laptop is software-signed; only bundles
+materialised by Govplane Cloud are signed in a validated HSM. If that
+distinction matters to you, it has to come from your own key management — not
+from `signature.algorithm`.
+
+## Configuration
+
+### Context validation
+
+Off unless you configure a policy:
+
+```ts
+await createLocalClient({
+  bundlePath: './policy-bundle.json',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey },
+  engine: {
+    contextPolicy: {
+      allowedKeys: ['failedAttempts', 'plan', 'country'],
+      blockLikelyPiiKeys: true,
+    },
+  },
+});
+```
+
+The engine ships a seven-key sample policy. Enforcing it by default would reject
+the very keys your own rules read, so a client enforces a policy only when you
+pin one. Pin your real key set and it is enforced — including the PII-name
+heuristic, which is worth having.
+
+### Watching for changes
+
+**A local bundle is read once, at construction.** Replacing the file on disk
+changes nothing until you ask for it — pass `watch` to reload when it changes:
+
+```ts
+await createLocalClient({
+  bundlePath: './policy-bundle.json',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey },
+  watch: { intervalMs: 5000 },
+  onError: (error) => logger.warn({ error }, 'policy reload failed'),
+});
+```
+
+A failed reload never replaces a good bundle with nothing: the previous bundle
+stays in force and `onError` is called. The same is true of a remote fetch
+failure — after repeated failures the client reports `degraded`, still serving
+the last bundle it verified.
+
+### Traces
+
+```ts
+const result = govplane.evaluateWithTrace(
+  { target, context },
+  { level: 'full', force: true },
+);
+console.log(formatTrace(result.trace, { includeDiscarded: true }));
+```
+
+Levels are `off`, `errors`, `sampled` and `full`. Traces carry no context
+values — only rule identifiers, priorities and outcomes.
+
+## Errors
+
+Every error carries a stable `code`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `BUNDLE_READ_ERROR` / `BUNDLE_PARSE_ERROR` | The file is missing or not JSON |
+| `BUNDLE_INVALID` + a specific code | Structural validation failed |
+| `CHECKSUM_MISMATCH` | Contents do not match the embedded checksum |
+| `BUNDLE_UNSIGNED` | Unsigned, and `allowUnsigned` was not set |
+| `BUNDLE_SIGNATURE_MISSING` | A key is configured; the bundle has no signature |
+| `BUNDLE_SIGNATURE_UNVERIFIED` | Signed, but no key configured to check it |
+| `BUNDLE_SIGNATURE_INVALID` | The signature does not match |
+| `BUNDLE_SIGNATURE_ALGORITHM_MISMATCH` | Key algorithm ≠ signature algorithm |
+| `BUNDLE_SIGNATURE_ALGORITHM_UNSUPPORTED` | Not acceptable from this source |
+| `BUNDLE_SIGNATURE_ALGORITHM_REMOVED` | Ed25519 |
+| `BUNDLE_SIGNATURE_CONFIG_ERROR` | Malformed key material |
+| `INVALID_CONFIGURATION` | The client cannot be built as configured |
+
+Validation codes match `govplane validate`, so a code in your application log
+means the same thing as a code in the CLI's output.
+
+## Migrating from 1.x
+
+See [`docs/migration.md`](docs/migration.md). In short:
+
+| 1.x | 2.x |
+| --- | --- |
+| `new RuntimeClient({ baseUrl, runtimeKey, … })` | `createRemoteClient({ … })` |
+| `isolation: { safeBundlePath, publicKey, expectedOrgId, … }` | `createLocalClient({ bundlePath, verify })` |
+| Ed25519 safe bundles | ECDSA_SHA_256 or HMAC_SHA256 |
+| `orgId` / `projectId` always required | required for remote only |
+
+## Licence
+
+MIT. The SDK is published openly, but it is not an open-contribution project —
+it contains the client for Govplane Cloud, and pull requests are not accepted.
+Issues and bug reports are welcome.

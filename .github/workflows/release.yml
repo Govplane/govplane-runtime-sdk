@@ -1,0 +1,148 @@
+name: Release
+
+# Publishes to npm with an automation token, with provenance attached.
+#
+# Requires an `NPM_TOKEN` secret on the repository — an npm **granular access
+# token**, scoped to this package only, with read and write permission and an
+# expiry set. A classic automation token works but grants far more than this
+# workflow needs.
+#
+# Provenance still applies: `id-token: write` and `--provenance` below are what
+# produce the "Built and signed on GitHub Actions" badge. With a token they are
+# explicit, where trusted publishing would supply both on its own.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write        # required for provenance, even when using a token
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: release # gate releases on a required reviewer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      # Provenance needs npm 9.5.0 or later. Node 22 ships something newer, but
+      # pinning to latest keeps this from silently depending on the runner image.
+      - name: Use an npm that supports provenance
+        run: npm install --global npm@latest
+
+      - run: npm ci
+
+      - name: Verify before publishing
+        run: npm run lint && npm run typecheck && npm run test:coverage
+
+      - name: Confirm the tag matches package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          test "v$VERSION" = "${GITHUB_REF_NAME}" \
+            || { echo "Tag ${GITHUB_REF_NAME} does not match package version $VERSION" >&2; exit 1; }
+
+      # A file: or link: dependency is meaningless on a user's machine and
+      # produces a broken install. npm publish will not warn about it.
+      - name: Refuse unpublishable dependencies
+        run: |
+          node -e "
+            const deps = { ...require('./package.json').dependencies };
+            const bad = Object.entries(deps).filter(([, v]) => /^(file|link):/.test(v));
+            if (bad.length) {
+              console.error('Unpublishable dependencies: ' + JSON.stringify(bad));
+              process.exit(1);
+            }
+          "
+
+      # `npm publish` creates a package that does not exist yet — there is no
+      # separate creation step. What it cannot create is the **scope**: an npm
+      # organisation, or a user account whose name matches it. Publishing into a
+      # scope you do not own returns `404 on PUT`, because npm will not reveal
+      # whether it exists, and that error names the package rather than the
+      # cause. This step says the cause out loud.
+      - name: Inspect the registry
+        id: registry
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          SCOPE=$(echo "$NAME" | sed -n 's|^@\([^/]*\)/.*|\1|p')
+          echo "name=$NAME"       >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # An unusable token is unambiguous, so fail on it immediately.
+          if ! WHO=$(npm whoami 2>&1); then
+            echo "::error::NPM_TOKEN is missing, expired or invalid. npm said: $WHO"
+            exit 1
+          fi
+          echo "Authenticated as: $WHO"
+
+          if [ -n "$SCOPE" ] && [ "$WHO" != "$SCOPE" ]; then
+            # A scope is either an organisation or a user of the same name. If it
+            # is neither, publish will 404. Warn rather than fail: `npm org ls`
+            # can be refused for reasons unrelated to existence, and blocking a
+            # valid release on a heuristic is worse than a confusing publish.
+            if ! npm org ls "$SCOPE" >/dev/null 2>&1; then
+              echo "::warning::Cannot confirm access to the @$SCOPE scope as $WHO. If the publish below fails with a 404 on PUT, that is why: create the @$SCOPE organisation on npmjs.com and add $WHO to it with publish rights, or rename the package to a scope you own."
+            fi
+          fi
+
+          if npm view "$NAME" version >/dev/null 2>&1; then
+            echo "first=false" >> "$GITHUB_OUTPUT"
+
+            # npm versions are immutable. Republishing one is refused, and it is
+            # clearer to say so here than to read EPUBLISHCONFLICT out of npm.
+            if [ -n "$(npm view "$NAME@$VERSION" version 2>/dev/null)" ]; then
+              echo "::error::$NAME@$VERSION is already published. Versions are immutable — bump the version and tag again."
+              exit 1
+            fi
+
+            echo "::notice::Publishing $VERSION of the existing package $NAME."
+          else
+            echo "first=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$NAME is not on the registry. This publish will create it."
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # `--access public` is what creates a *scoped* package as public. Without
+      # it npm makes the first publish private, which fails on a free account
+      # and is not what an open-source package wants either way.
+      #
+      # The scope itself must already exist: npm cannot create the @govplane
+      # organisation on your behalf, and a missing one fails here with a 404.
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summarise
+        if: success()
+        run: |
+          {
+            echo "### Published ${{ steps.registry.outputs.name }}@${{ steps.registry.outputs.version }}"
+            echo
+            if [ "${{ steps.registry.outputs.first }}" = "true" ]; then
+              echo "Created the package on npm for the first time."
+              echo
+              echo "**Next:** replace the publishing token with a granular one scoped to"
+              echo "this package — it could not be scoped before the package existed."
+            else
+              echo "Published a new version of an existing package."
+            fi
+            echo
+            echo "https://www.npmjs.com/package/${{ steps.registry.outputs.name }}"
+          } >> "$GITHUB_STEP_SUMMARY"

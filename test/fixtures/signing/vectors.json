@@ -1,0 +1,74 @@
+{
+  "description": "Canonical bytes, checksums and signatures for Govplane runtime bundles.",
+  "generatedBy": "@govplane/cli src/domain/canonical.ts",
+  "keys": {
+    "hmacSecretHex": "a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1a3f1",
+    "ecdsaPublicKeyPem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtMIdNi1CsI/8vWXMsYTw3ENQARlr\nElTTZSzGWhXJnXYKDp6fQD7LTFSFtizmbaSse3/xSvWEFDK281dH2p2LUw==\n-----END PUBLIC KEY-----\n"
+  },
+  "vectors": {
+    "minimal-local": {
+      "canonicalUtf8": "{\"env\":\"prod\",\"policies\":[],\"schemaVersion\":1}",
+      "canonicalSha256Hex": "d6b047fc6f1c04b200a244de0ef3b6857581d832965651cfdae90e71c412de8b",
+      "checksum": "sha256:d6b047fc6f1c04b200a244de0ef3b6857581d832965651cfdae90e71c412de8b",
+      "byteLength": 46,
+      "signatures": {
+        "HMAC_SHA256": {
+          "keyId": "test-hmac-key",
+          "value": "ca7ec6aa68c1d036245eb853264694f89248a86ed6506182cc6451ffb16069e9"
+        },
+        "ECDSA_SHA_256": {
+          "keyId": "test-ecdsa-key",
+          "value": "MEQCIARrRH3H2G63kDuTYSAMJHdXeWMUVSnQSma5FssLPTvzAiBUXBv+D0uZz3RRMFDmyPZIT0NvQazBNUBpusfJfmuOXg=="
+        }
+      }
+    },
+    "scoped-cloud": {
+      "canonicalUtf8": "{\"env\":\"prod\",\"orgId\":\"org_2f7d\",\"policies\":[{\"activeVersion\":3,\"defaults\":{\"effect\":\"allow\"},\"policyKey\":\"login-protection\",\"rules\":[{\"effect\":{\"type\":\"deny\"},\"id\":\"deny-after-five\",\"priority\":100,\"status\":\"active\",\"target\":{\"action\":\"authenticate\",\"resource\":\"login\",\"service\":\"auth\"},\"when\":{\"op\":\"gte\",\"path\":\"ctx.failedAttempts\",\"value\":5}}]}],\"projectId\":\"proj_9b1c\",\"schemaVersion\":1}",
+      "canonicalSha256Hex": "e6be8bba6a2d9b7319e94b1ff28f3bc37e2cfaca2e2c144cf4d2ee624072c093",
+      "checksum": "sha256:e6be8bba6a2d9b7319e94b1ff28f3bc37e2cfaca2e2c144cf4d2ee624072c093",
+      "byteLength": 391,
+      "signatures": {
+        "HMAC_SHA256": {
+          "keyId": "test-hmac-key",
+          "value": "762c1ef814513e0e840b66c22a11f8268d51d1bd33b7d16d7b52f28c286590fc"
+        },
+        "ECDSA_SHA_256": {
+          "keyId": "test-ecdsa-key",
+          "value": "MEUCIQCPzBw9t6gJRKZamPBROmZ9B3msfC5JLz0noucat5mlUQIgLwccnRxURHWqskNlkCVIIzF/BFpJNjN3RVbvNEroE/c="
+        }
+      }
+    },
+    "all-effects": {
+      "canonicalUtf8": "{\"env\":\"staging\",\"orgId\":\"org_2f7d\",\"policies\":[{\"activeVersion\":1,\"defaults\":{\"effect\":\"kill_switch\",\"killSwitch\":{\"reason\":\"incident\",\"service\":\"payments\"}},\"policyKey\":\"a-kill-switch\",\"rules\":[]},{\"activeVersion\":1,\"defaults\":{\"effect\":\"throttle\",\"throttle\":{\"key\":\"ctx.userId\",\"limit\":100,\"windowSeconds\":60}},\"policyKey\":\"b-throttle\",\"rules\":[]},{\"activeVersion\":1,\"defaults\":{\"customEffect\":\"{\\\"tier\\\":\\\"gold\\\"}\",\"effect\":\"custom\"},\"policyKey\":\"c-custom\",\"rules\":[{\"effect\":{\"type\":\"custom\",\"value\":\"{\\\"tier\\\":\\\"silver\\\"}\"},\"id\":\"nested-condition\",\"priority\":50,\"status\":\"active\",\"target\":{\"action\":\"request\",\"resource\":\"*\",\"service\":\"api\"},\"when\":{\"conditions\":[{\"op\":\"exists\",\"path\":\"ctx.token\"},{\"condition\":{\"op\":\"in\",\"path\":\"ctx.country\",\"values\":[\"XX\",\"YY\"]},\"op\":\"not\"}],\"op\":\"and\"}}]}],\"projectId\":\"proj_9b1c\",\"schemaVersion\":1}",
+      "canonicalSha256Hex": "64515e0c1f02da3e8de6e3e9feac7b0118ab9a9c4420218c5e676db7a5ce4fa6",
+      "checksum": "sha256:64515e0c1f02da3e8de6e3e9feac7b0118ab9a9c4420218c5e676db7a5ce4fa6",
+      "byteLength": 842,
+      "signatures": {
+        "HMAC_SHA256": {
+          "keyId": "test-hmac-key",
+          "value": "bdd7a6eb185f0cc9e505da81790828ee360555a328e9ed37bd702f6695a5f66d"
+        },
+        "ECDSA_SHA_256": {
+          "keyId": "test-ecdsa-key",
+          "value": "MEYCIQDMeIQxWR+hEg6NSQCA6Yg/swe76zSd9OrgYfQZJa8aCAIhAJSyYhdNdcCOvS8duSVFNLvgSJb8Wy8hYNfGhSWAo9Cx"
+        }
+      }
+    },
+    "ordering-and-unicode": {
+      "canonicalUtf8": "{\"env\":\"dev\",\"orgId\":\"org_émoji_🔐\",\"policies\":[{\"activeVersion\":1,\"defaults\":{\"effect\":\"deny\"},\"policyKey\":\"zeta-policy\",\"rules\":[{\"effect\":{\"type\":\"deny\"},\"id\":\"unicode-rule\",\"priority\":10,\"status\":\"active\",\"target\":{\"action\":\"read\",\"resource\":\"/documentos/ñ/日本\",\"service\":\"files\"}}]}],\"projectId\":\"proj_ñ\",\"schemaVersion\":1}",
+      "canonicalSha256Hex": "8293bcfb9732fa7ba62f5cb9ed08ca3ef3c737d427b3130eafe6f4fff61eb054",
+      "checksum": "sha256:8293bcfb9732fa7ba62f5cb9ed08ca3ef3c737d427b3130eafe6f4fff61eb054",
+      "byteLength": 336,
+      "signatures": {
+        "HMAC_SHA256": {
+          "keyId": "test-hmac-key",
+          "value": "4bd960dd5b9b2051189e0bcab5d54351b645cfd3c8bb4d3edc9ca70c76c1e70d"
+        },
+        "ECDSA_SHA_256": {
+          "keyId": "test-ecdsa-key",
+          "value": "MEYCIQCa5BuvIpnEBWsmzvHJB/pUKIXZir+0T3/WyE4+UnX0HQIhAPisI2nk62npZqwWMq969UUACgRzpMfKIvZjggmBOZwa"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "@govplane/runtime-sdk",
+  "version": "2.0.0",
+  "description": "Govplane Runtime SDK — evaluate Govplane policy bundles in your application, from a local file or from Govplane Cloud.",
+  "keywords": [
+    "govplane",
+    "policy",
+    "governance",
+    "authorization",
+    "runtime",
+    "sdk",
+    "policy-engine"
+  ],
+  "homepage": "https://github.com/govplane/govplane-runtime-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/govplane/govplane-runtime-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/govplane/govplane-runtime-sdk.git"
+  },
+  "license": "MIT",
+  "author": "Govplane",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "clean": "node --input-type=module -e \"import{rmSync}from'node:fs';rmSync('dist',{recursive:true,force:true})\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.17.6",
+    "eslint": "^9.39.1",
+    "eslint-config-airbnb-extended": "^3.1.1",
+    "eslint-plugin-import-x": "^4.16.1",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.3"
+  }
+}

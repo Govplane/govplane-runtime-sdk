@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "orgId": "org_2f7d",
+  "projectId": "proj_9b1c",
+  "env": "staging",
+  "generatedAt": "2026-08-02T12:00:00.000Z",
+  "bundleVersion": 2,
+  "policies": [
+    {
+      "policyKey": "a-kill-switch",
+      "activeVersion": 1,
+      "defaults": {
+        "effect": "kill_switch",
+        "killSwitch": {
+          "service": "payments",
+          "reason": "incident"
+        }
+      },
+      "rules": []
+    },
+    {
+      "policyKey": "b-throttle",
+      "activeVersion": 1,
+      "defaults": {
+        "effect": "throttle",
+        "throttle": {
+          "limit": 100,
+          "windowSeconds": 60,
+          "key": "ctx.userId"
+        }
+      },
+      "rules": []
+    },
+    {
+      "policyKey": "c-custom",
+      "activeVersion": 1,
+      "defaults": {
+        "effect": "custom",
+        "customEffect": "{\"tier\":\"gold\"}"
+      },
+      "rules": [
+        {
+          "id": "nested-condition",
+          "status": "active",
+          "priority": 50,
+          "target": {
+            "service": "api",
+            "resource": "*",
+            "action": "request"
+          },
+          "when": {
+            "op": "and",
+            "conditions": [
+              {
+                "op": "exists",
+                "path": "ctx.token"
+              },
+              {
+                "op": "not",
+                "condition": {
+                  "op": "in",
+                  "path": "ctx.country",
+                  "values": [
+                    "XX",
+                    "YY"
+                  ]
+                }
+              }
+            ]
+          },
+          "effect": {
+            "type": "custom",
+            "value": "{\"tier\":\"silver\"}"
+          }
+        }
+      ]
+    }
+  ]
+}

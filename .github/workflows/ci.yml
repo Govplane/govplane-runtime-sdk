@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: Snyk security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+
+  verify:
+    name: Node.js ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      # The published package must be importable and must verify a bundle.
+      # A build that type-checks but cannot load is still broken.
+      - name: Smoke-test the built package
+        run: |
+          node --input-type=module -e "
+            import { createLocalClient, canonicalPayload } from './dist/index.js';
+            import { writeFileSync } from 'node:fs';
+
+            const bundle = {
+              schemaVersion: 1,
+              env: 'prod',
+              policies: [{
+                policyKey: 'smoke',
+                activeVersion: 1,
+                defaults: { effect: 'allow' },
+                rules: [],
+              }],
+            };
+
+            writeFileSync('/tmp/smoke-bundle.json', JSON.stringify(bundle));
+            const client = await createLocalClient({
+              bundlePath: '/tmp/smoke-bundle.json',
+              allowUnsigned: true,
+            });
+
+            const decision = client.evaluate({
+              target: { service: 'a', resource: 'b', action: 'c' },
+            });
+            if (decision.decision !== 'allow') {
+              throw new Error('unexpected decision: ' + JSON.stringify(decision));
+            }
+            if (canonicalPayload(bundle).length === 0) {
+              throw new Error('canonicalPayload produced nothing');
+            }
+            client.close();
+            console.log('smoke test passed');
+          "
+
+      # The package ships a single ESM build that CommonJS consumers load with
+      # require(). That path goes through the `exports` map and Node's
+      # require(esm) support, neither of which the ESM smoke test above touches.
+      # Installing from a real tarball also proves `files` ships what is needed.
+      - name: Smoke-test require() from CommonJS
+        run: |
+          npm pack --pack-destination /tmp
+          mkdir -p /tmp/cjs-consumer && cd /tmp/cjs-consumer
+          echo '{"name":"cjs-consumer","version":"1.0.0","type":"commonjs"}' > package.json
+          npm install /tmp/govplane-runtime-sdk-*.tgz --no-audit --no-fund
+          node -e "
+            const sdk = require('@govplane/runtime-sdk');
+
+            if (typeof sdk.createLocalClient !== 'function') {
+              throw new Error('createLocalClient missing from the CommonJS require');
+            }
+
+            // The reason there is no second CommonJS build: one module instance
+            // means the error classes are shared, so instanceof holds across the
+            // require()/import() boundary instead of silently failing.
+            import('@govplane/runtime-sdk').then((esm) => {
+              if (esm.BundleValidationError !== sdk.BundleValidationError) {
+                throw new Error('require() and import() returned different classes');
+              }
+              const error = new esm.BundleValidationError('x');
+              if (!(error instanceof sdk.BundleValidationError)) {
+                throw new Error('instanceof failed across require()/import()');
+              }
+              console.log('CommonJS smoke test passed');
+            });
+          "

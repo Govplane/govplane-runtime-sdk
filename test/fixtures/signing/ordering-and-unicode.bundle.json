@@ -1,0 +1,31 @@
+{
+  "policies": [
+    {
+      "rules": [
+        {
+          "effect": {
+            "type": "deny"
+          },
+          "target": {
+            "action": "read",
+            "service": "files",
+            "resource": "/documentos/ñ/日本"
+          },
+          "priority": 10,
+          "id": "unicode-rule",
+          "status": "active"
+        }
+      ],
+      "defaults": {
+        "effect": "deny"
+      },
+      "activeVersion": 1,
+      "policyKey": "zeta-policy"
+    }
+  ],
+  "env": "dev",
+  "projectId": "proj_ñ",
+  "orgId": "org_émoji_🔐",
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-02T12:00:00.000Z"
+}
