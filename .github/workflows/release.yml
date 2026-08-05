@@ -43,10 +43,45 @@ jobs:
           node-version: '22'
           cache: npm
 
-      # Provenance needs npm 9.5.0 or later. Node 22 ships something newer, but
-      # pinning to latest keeps this from silently depending on the runner image.
-      - name: Use an npm that supports provenance
+      # Trusted publishing needs npm 11.5.1 or later; provenance needs 9.5.0.
+      # Pinning to latest keeps this from silently depending on the runner image.
+      - name: Use an npm that supports trusted publishing
         run: npm install --global npm@latest
+
+      # Trusted publishing has three preconditions, and when one is missing npm
+      # says only `ENEEDAUTH` — the same thing it says for a plain missing token.
+      # This reports each one so a failure names its own cause. No secret is
+      # printed: the OIDC variables are reported as present or absent only.
+      - name: Check the preconditions for trusted publishing
+        run: |
+          NPM_VERSION=$(npm --version)
+          echo "npm:      $NPM_VERSION"
+          echo "registry: $(npm config get registry)"
+
+          node -e '
+            const [maj, min, patch] = process.argv[1].split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && patch >= 1)));
+            console.log("npm >= 11.5.1: " + (ok ? "yes" : "NO — trusted publishing is unsupported"));
+            if (!ok) process.exitCode = 1;
+          ' "$NPM_VERSION"
+
+          # Set by the runner only when the job has `id-token: write`. Without
+          # them npm cannot request an OIDC token and falls back to ENEEDAUTH.
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+            echo "OIDC request variables: present"
+          else
+            echo "::error::OIDC request variables are absent, so npm cannot authenticate. The job needs 'id-token: write', and the repository or organisation must not restrict it."
+            exit 1
+          fi
+
+          # Any credential here takes precedence over OIDC and produces a 404 on
+          # PUT instead of an exchange.
+          for f in .npmrc "$NPM_CONFIG_USERCONFIG" "$HOME/.npmrc"; do
+            if [ -n "$f" ] && [ -f "$f" ]; then
+              echo "::warning::An npmrc exists at $f — if it carries a token, it will be used instead of OIDC."
+              grep -c "_authToken" "$f" | sed 's/^/  _authToken lines: /'
+            fi
+          done
 
       - run: npm ci
 
