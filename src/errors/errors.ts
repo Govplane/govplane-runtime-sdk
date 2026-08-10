@@ -65,6 +65,21 @@ export class BundleSignatureError extends GovplaneError {
   }
 }
 
+/**
+ * A rule addressed by name is not in the bundle.
+ *
+ * Thrown rather than returned as a denial, unlike every other evaluation-time
+ * problem. Those describe a policy outcome; this describes a caller naming
+ * something that does not exist, and reporting it as `deny` would hide a typo as
+ * a decision nobody investigates.
+ */
+export class RuleNotFoundError extends GovplaneError {
+  constructor(message: string, details?: unknown) {
+    super(message, 'RULE_NOT_FOUND', details);
+    this.name = 'RuleNotFoundError';
+  }
+}
+
 /** Configuration that cannot produce a working client. */
 export class ConfigurationError extends GovplaneError {
   constructor(message: string, code = 'INVALID_CONFIGURATION', details?: unknown) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import { createPolicyEngine } from '../../src/engine/createPolicyEngine.js';
-import type { RuntimeBundleV1 } from '../../src/engine/types.js';
+import type { Decision, RuntimeBundleV1 } from '../../src/engine/types.js';
 
 /**
  * Decision semantics.
@@ -42,10 +42,13 @@ const bundleOf = (
   })),
 }) as RuntimeBundleV1;
 
+// Annotated as `Decision` rather than inferred from `evaluate`: that method is
+// overloaded now, and `ReturnType` picks the widest signature — the union of
+// every return shape — which no assertion here wants to narrow.
 const decide = (
   bundle: RuntimeBundleV1,
   context: Record<string, unknown> = {},
-): ReturnType<ReturnType<typeof createPolicyEngine>['evaluate']> => createPolicyEngine({
+): Decision => createPolicyEngine({
   getBundle: () => bundle,
   validateContext: false,
 }).evaluate({ target: TARGET, context });

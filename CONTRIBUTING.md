@@ -10,25 +10,40 @@ section on Govplane Cloud — so nobody's time is wasted.
 ## Areas open for contribution
 
 Most of the SDK is straightforward to contribute to: the local evaluation
-engine, bundle parsing and validation, error handling, type definitions,
-documentation, and tests are all reasonable targets for a pull request.
+engine, bundle parsing and validation, signature verification, error handling,
+type definitions, documentation, and tests are all reasonable targets for a
+pull request.
+
+The one area to approach differently is the Govplane Cloud client, immediately
+below.
 
 ## Contributions touching Govplane Cloud connection, authentication or telemetry
 
-Code that affects how the SDK connects to, authenticates with, or communicates
-with Govplane Cloud services is subject to **stricter review**. This includes
-anything in or around `createRemoteClient`, token exchange, session management,
-and telemetry. Such pull requests:
+**A pull request that changes this area has a high chance of being rejected.**
+Please read this section before writing the code, not after.
 
-- must include a clear explanation of the problem being solved and why the
-  current behaviour is wrong or insufficient;
+It covers anything affecting how the SDK connects to, authenticates with, or
+communicates with Govplane Cloud — in particular `createRemoteClient`, the
+remote bundle source, token exchange, session management and telemetry.
+
+The reason is not the quality of the contribution. This code implements one half
+of a contract whose other half is the control plane, which is closed and on its
+own release schedule. A change that is correct against today's contract can
+still conflict with infrastructure work already in progress, and we cannot
+always say publicly why.
+
+So a pull request here:
+
+- **is likely to be rejected**, even when the code is correct and the problem
+  is real;
 - will be reviewed against the control plane's contract before any merge is
   considered;
-- **may be rejected** even if the code is correct, if the change conflicts with
-  upcoming infrastructure work or internal release constraints.
+- must explain the problem being solved and why the current behaviour is wrong
+  or insufficient, not only what the patch does.
 
-This is not a comment on the quality of the contribution. It is a consequence
-of the release process being tied to the control plane's.
+**Open an issue first.** Describe the problem and let us tell you whether a
+patch can land before you spend the effort. If it cannot, the issue is still
+useful — it is how the fix gets scheduled on our side.
 
 ## What is very welcome
 
@@ -59,12 +74,13 @@ change to the policy language, and it starts as a specification discussion
 rather than a patch here. Open an issue describing the behaviour you want and
 why the current behaviour is wrong.
 
-## What is open source
+## The rest of the toolchain
 
-The CLI and the toolkit are, and they take contributions:
+Also MIT, also open to contributions, and with no closed counterpart to work
+around:
 
-- [`@govplane/cli`](https://github.com/govplane/govplane-cli)
-- [`@govplane/toolkit`](https://github.com/govplane/govplane-toolkit)
+- [`@govplane/cli`](https://github.com/Govplane/govplane-cli)
+- [`@govplane/cli-toolkit`](https://github.com/Govplane/govplane-cli-toolkit)
 
 Between them they cover authoring, building, signing, simulating and analysing
 policy bundles — and none of it requires Govplane infrastructure.

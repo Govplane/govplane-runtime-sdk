@@ -101,6 +101,8 @@ Both factories return the same interface:
 
 ```ts
 govplane.evaluate({ target, context });
+govplane.evaluate({ ruleId, context });                    // one named rule
+govplane.evaluate({ target, context }, { asBoolean: true }); // just yes or no
 govplane.evaluateWithTrace({ target, context }, { level: 'full' });
 govplane.bundle();     // the bundle currently in force
 govplane.status();     // origin, version, checksum, signature, policy count
@@ -126,6 +128,75 @@ priority descending — a `kill_switch` at priority 1 beats a `deny` at 100.
 
 When nothing matches and no policy offers a default, the decision is
 **deny by default**.
+
+### Shorter answers
+
+Call sites that only branch on the outcome can ask for it directly:
+
+```ts
+if (!govplane.evaluate({ target, context }, { asBoolean: true })) return forbidden();
+
+const allowed = govplane.evaluate({ target, context }, { asBinary: true });   // 1 | 0
+const effect  = govplane.evaluate({ target, context }, { effectOnly: true }); // 'allow' | 'deny' | …
+```
+
+The return type follows the option, so none of these need narrowing.
+
+| Decision | `asBoolean` | `asBinary` |
+| --- | --- | --- |
+| `allow` | `true` | `1` |
+| `custom` | `true` | `1` |
+| `deny` | `false` | `0` |
+| `kill_switch` | `false` | `0` |
+| `throttle` | **`false`** | **`0`** |
+
+`throttle` reduces to false even though it permits the action. A boolean cannot
+carry the limit, so a caller who saw `true` would proceed at an unbounded rate —
+failing open on the one effect whose purpose is to bound it. **If you act on
+throttles, read the full decision** and use `decision.throttle`.
+
+All three are lossy by design: a kill switch's service, a custom effect's value
+and a throttle's window are only on the full object. Set at most one — setting
+two throws `ConfigurationError`, rather than picking one for you.
+`evaluateWithTrace` always returns the full decision, because a trace with
+nothing to explain is not worth having.
+
+## Evaluating a single rule
+
+A rule can be addressed by name instead of by target:
+
+```ts
+govplane.evaluate({ ruleId: 'deny-after-five-failures', context: { failedAttempts: 6 } });
+```
+
+This is for call sites that already know which rule they mean, where restating
+the service, resource and action is repetition that can drift from the bundle.
+Target matching is skipped entirely — the rule's own target says what it covers,
+not whether it was selected — but `context` still matters, because the rule's
+condition reads it.
+
+**Both ways of asking give the same answer.** If the rule does not fire, its
+owning policy's default applies, exactly as it would had you named the target:
+
+```ts
+// deny-after-five-failures fires at >= 5; its policy allows by default
+govplane.evaluate({ ruleId: 'deny-after-five-failures', context: { failedAttempts: 3 } });
+// → { decision: 'allow', reason: 'default', policyKey: 'login-protection' }
+```
+
+**Rule ids are unique within a policy, not across a bundle.** Two policies may
+each contain a rule called `deny-large`, and such a bundle is valid. Given only a
+`ruleId`, the first match in bundle order wins. Name the policy to remove the
+ambiguity:
+
+```ts
+govplane.evaluate({ ruleId: 'deny-large', policyKey: 'refund-control', context });
+```
+
+If the rule — or the named policy — is not in the bundle, this **throws**
+`RuleNotFoundError` rather than returning a denial. Naming something that is not
+there is a mistake in the calling code, and reporting it as `deny` would leave a
+typo looking like a policy decision nobody investigates.
 
 ## Verification
 
@@ -235,6 +306,8 @@ Every error carries a stable `code`:
 | `BUNDLE_SIGNATURE_ALGORITHM_REMOVED` | Ed25519 |
 | `BUNDLE_SIGNATURE_CONFIG_ERROR` | Malformed key material |
 | `INVALID_CONFIGURATION` | The client cannot be built as configured |
+| `INVALID_EVALUATE_OPTIONS` | More than one of `asBoolean`, `asBinary`, `effectOnly` |
+| `RULE_NOT_FOUND` | A rule or policy named in `evaluate` is not in the bundle |
 
 Validation codes match `govplane validate`, so a code in your application log
 means the same thing as a code in the CLI's output.
@@ -250,8 +323,23 @@ See [`docs/migration.md`](docs/migration.md). In short:
 | Ed25519 safe bundles | ECDSA_SHA_256 or HMAC_SHA256 |
 | `orgId` / `projectId` always required | required for remote only |
 
+## Contributing
+
+Contributions are accepted. The source is public so you can read exactly what
+runs in your application, and the local half of the SDK — the evaluation engine,
+bundle parsing and validation, verification, errors, types, docs and tests — is
+open to pull requests on the usual terms.
+
+The exception is the Govplane Cloud client: `createRemoteClient`, the remote
+bundle source, authentication and telemetry. That code implements one half of a
+contract whose other half is closed and on its own release schedule, so **a pull
+request touching it has a high chance of being rejected even when it is
+correct**. Open an issue first and let us tell you whether a patch can land.
+
+Bug reports are very welcome either way — see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for what makes a useful one, and [`SECURITY.md`](SECURITY.md) for anything that
+should not be a public issue.
+
 ## Licence
 
-MIT. The SDK is published openly, but it is not an open-contribution project —
-it contains the client for Govplane Cloud, and pull requests are not accepted.
-Issues and bug reports are welcome.
+MIT.

@@ -58,5 +58,5 @@ export type { BundleSource, LoadedBundle, SourceDescription } from './source/typ
 
 export {
   BundleSignatureError, BundleValidationError, ConfigurationError, GovplaneError, HttpError,
-  SafeBundleValidationError,
+  RuleNotFoundError, SafeBundleValidationError,
 } from './errors/errors.js';

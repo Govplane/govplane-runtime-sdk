@@ -131,15 +131,76 @@ export interface TraceOptions {
   };
 }
 
-export interface PolicyEngineEvaluateInput {
-  target: Target;
-  context?: Record<string, unknown>;
+/**
+ * What to evaluate: a target, or one named rule.
+ *
+ * Naming a rule addresses it directly and skips target matching entirely — the
+ * rule's own `target` says what it is about, not whether it was selected. It is
+ * for call sites that already know which rule they mean, where restating the
+ * service, resource and action is repetition the caller can get wrong.
+ *
+ * `context` is required by neither form and needed by both in practice: a rule
+ * without context can only ever reach its unconditional effect.
+ */
+export type PolicyEngineEvaluateInput =
+  | {
+    target: Target;
+    context?: Record<string, unknown>;
+  }
+  | {
+    /** Rule to evaluate. Ambiguous across policies unless `policyKey` is given. */
+    ruleId: string;
+    /** Narrows the search to one policy, and makes the address unambiguous. */
+    policyKey?: string;
+    context?: Record<string, unknown>;
+  };
+
+/** True when the caller addressed a rule rather than a target. */
+export const isRuleInput = (
+  input: PolicyEngineEvaluateInput,
+): input is Extract<PolicyEngineEvaluateInput, { ruleId: string }> => (
+  typeof (input as { ruleId?: unknown }).ruleId === 'string'
+);
+
+/**
+ * How the decision should be returned.
+ *
+ * All three are lossy on purpose, for call sites that branch on the outcome and
+ * never read the rest. Anything that needs a throttle's limit, a kill switch's
+ * service or a custom effect's value must read the full decision — which is why
+ * `evaluateWithTrace` ignores these and always returns the object.
+ *
+ * At most one may be set: they are three answers to the same question, and a
+ * caller who sets two has a misunderstanding worth surfacing rather than a
+ * preference worth guessing at.
+ */
+export interface EvaluateOptions {
+  /** `allow` and `custom` are true; `deny`, `kill_switch` and `throttle` are false. */
+  asBoolean?: boolean;
+  /** The same mapping, as `1` and `0`. */
+  asBinary?: boolean;
+  /** The `decision` string alone, with no reason, policy or rule. */
+  effectOnly?: boolean;
 }
 
 export interface PolicyEngine {
+  // Overloaded so the return type follows the option, rather than handing back a
+  // union every call site has to narrow.
   evaluate(input: PolicyEngineEvaluateInput): Decision;
+  evaluate(input: PolicyEngineEvaluateInput, options: { asBoolean: true }): boolean;
+  evaluate(input: PolicyEngineEvaluateInput, options: { asBinary: true }): 0 | 1;
+  evaluate(
+    input: PolicyEngineEvaluateInput,
+    options: { effectOnly: true },
+  ): Decision['decision'];
+  evaluate(
+    input: PolicyEngineEvaluateInput,
+    options?: EvaluateOptions,
+  ): Decision | boolean | 0 | 1 | Decision['decision'];
 
-  // devuelve Decision con trace opcional según level/sampling/budget
+  // devuelve Decision con trace opcional según level/sampling/budget.
+  // Deliberately unshaped: a trace explains a decision, so reducing the decision
+  // to a boolean beside it would leave the explanation with nothing to explain.
   evaluateWithTrace(
     input: PolicyEngineEvaluateInput,
     options?: TraceOptions

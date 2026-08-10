@@ -1,7 +1,7 @@
 import { createPolicyEngine } from '../engine/createPolicyEngine.js';
 import type { ContextPolicy } from '../engine/context.js';
 import type {
-  Decision, DecisionWithOptionalTrace, PolicyEngine, PolicyEngineEvaluateInput,
+  Decision, DecisionWithOptionalTrace, EvaluateOptions, PolicyEngine, PolicyEngineEvaluateInput,
   StructuredTraceEvent, TraceOptions, TraceQueueDropPolicy,
 } from '../engine/types.js';
 import type { BundleOrigin, RuntimeBundle } from '../bundle/types.js';
@@ -44,7 +44,21 @@ export interface ClientStatus {
 }
 
 export interface GovplaneClient {
+  /**
+   * Evaluates a target, or one rule named directly.
+   *
+   * The options are per call rather than per client on purpose: they change what
+   * the method returns, and a client-wide setting would make `evaluate` have a
+   * different type in different files for a reason invisible at the call site.
+   */
   evaluate(input: PolicyEngineEvaluateInput): Decision;
+  evaluate(input: PolicyEngineEvaluateInput, options: { asBoolean: true }): boolean;
+  evaluate(input: PolicyEngineEvaluateInput, options: { asBinary: true }): 0 | 1;
+  evaluate(input: PolicyEngineEvaluateInput, options: { effectOnly: true }): Decision['decision'];
+  evaluate(
+    input: PolicyEngineEvaluateInput,
+    options?: EvaluateOptions,
+  ): Decision | boolean | 0 | 1 | Decision['decision'];
   evaluateWithTrace(
     input: PolicyEngineEvaluateInput,
     options?: TraceOptions,
@@ -160,7 +174,9 @@ export const createClient = (
   });
 
   return {
-    evaluate: (input) => engine.evaluate(input),
+    evaluate: ((input: PolicyEngineEvaluateInput, shape?: EvaluateOptions) => (
+      engine.evaluate(input, shape)
+    )) as GovplaneClient['evaluate'],
     evaluateWithTrace: (input, traceOptions) => engine.evaluateWithTrace(input, traceOptions),
     bundle: () => current.bundle,
     status,

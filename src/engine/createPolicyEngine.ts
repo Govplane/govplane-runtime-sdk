@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import type { Decision, RuntimeBundleV1, Target, PolicyEngine } from "./types.js";
+import type {
+  Decision, RuntimeBundleV1, Target, PolicyEngine, PolicyEngineEvaluateInput, EvaluateOptions,
+} from "./types.js";
+import { isRuleInput } from "./types.js";
+import { shapeDecision } from "./decisionShape.js";
+import { RuleNotFoundError } from "../errors/errors.js";
 import type { ContextPolicy } from "./context.js";
 import { validateContext, DEFAULT_CONTEXT_POLICY } from "./context.js";
 import { evalWhen } from "./when.js";
@@ -58,9 +63,86 @@ interface EngineOpts {
   parseCustomEffect?: boolean;
 }
 
-interface EvaluateInput {
+type EvaluateInput = PolicyEngineEvaluateInput;
+
+/**
+ * The address of a rule named directly by the caller.
+ *
+ * Resolving it up front turns "evaluate this rule" into "evaluate the bundle,
+ * looking only here", so the rule then travels the same path a target-selected
+ * rule does — same status check, same `when`, same policy default, same
+ * decision construction. Answering by rule id and by target therefore cannot
+ * disagree, because there is only one implementation to disagree with.
+ */
+interface RuleSelection {
+  policyKey: string;
+  ruleId: string;
+  /**
+   * The selected rule's own target, carried so traces stay well-formed.
+   *
+   * A rule-addressed evaluation has no requested target, but `trace.target` is
+   * required by the published trace types and reading it is how a trace says
+   * what was evaluated. Recording what the rule covers is both true and useful;
+   * widening the field to optional would break every consumer already reading
+   * it, for a minor release.
+   */
   target: Target;
-  context?: Record<string, unknown>;
+}
+
+const NO_TARGET: Target = { service: "", resource: "", action: "" };
+
+/** The synthetic id the engine gives policy defaults; never a real rule. */
+const DEFAULT_RULE_ID = "__default__";
+
+function resolveRuleSelection(
+  bundle: RuntimeBundleV1,
+  input: Extract<PolicyEngineEvaluateInput, { ruleId: string }>,
+): RuleSelection {
+  const { ruleId } = input;
+
+  if (ruleId === DEFAULT_RULE_ID) {
+    throw new RuleNotFoundError(
+      `"${DEFAULT_RULE_ID}" is the engine's marker for a policy default, not a rule that can be evaluated.`,
+      { ruleId },
+    );
+  }
+
+  const policies: any[] = (bundle as any).policies ?? [];
+
+  if (input.policyKey !== undefined) {
+    const policy = policies.find((p) => String(p?.policyKey ?? "") === input.policyKey);
+    if (!policy) {
+      throw new RuleNotFoundError(
+        `No policy "${input.policyKey}" in this bundle.`,
+        { policyKey: input.policyKey, ruleId },
+      );
+    }
+    const rule = (policy.rules ?? []).find((r: any) => String(r?.id ?? "") === ruleId);
+    if (!rule) {
+      throw new RuleNotFoundError(
+        `Policy "${input.policyKey}" has no rule "${ruleId}".`,
+        { policyKey: input.policyKey, ruleId },
+      );
+    }
+    return { policyKey: input.policyKey, ruleId, target: rule.target ?? NO_TARGET };
+  }
+
+  // No policy given: first match in bundle order. Rule ids are only unique
+  // within a policy — the validator's duplicate check resets per policy — so
+  // this is a genuine choice between candidates, and bundle order is the one
+  // that stays stable for a given bundle.
+  for (const policy of policies) {
+    const rule = (policy?.rules ?? []).find((r: any) => String(r?.id ?? "") === ruleId);
+    if (rule) {
+      return {
+        policyKey: String(policy?.policyKey ?? ""),
+        ruleId,
+        target: rule.target ?? NO_TARGET,
+      };
+    }
+  }
+
+  throw new RuleNotFoundError(`No rule "${ruleId}" in this bundle.`, { ruleId });
 }
 
 interface Match {
@@ -139,7 +221,9 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
           traceId: makeTraceId(),
           sampled: "random" as const, // overwritten if forced
           evaluatedAt: new Date().toISOString(),
-          target: input.target,
+          // Filled in below for a rule-addressed evaluation, once the rule has
+          // been resolved and its own target is known.
+          target: isRuleInput(input) ? NO_TARGET : input.target,
           summary: {
             policiesSeen: 0,
             rulesSeen: 0,
@@ -164,6 +248,19 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
       };
     }
 
+    // Addressing a rule by name narrows the search to it; addressing a target
+    // leaves the search open and lets target matching do the narrowing. The
+    // resolution throws when the rule is not there, which is the one evaluation
+    // input the engine refuses to answer with a denial.
+    const selection: RuleSelection | null = isRuleInput(input)
+      ? resolveRuleSelection(bundle, input)
+      : null;
+    const target: Target | null = isRuleInput(input) ? null : input.target;
+
+    if (selection !== null && wantTrace) {
+      traceBase!.target = selection.target;
+    }
+
     const kills: Match[] = [];
     const denies: Match[] = [];
     const throttles: Match[] = [];
@@ -177,6 +274,13 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
       const policyKey = String((p as any).policyKey ?? "");
       const rules = (p as any).rules ?? [];
 
+      // A named rule lives in exactly one policy. Skipping the rest here rather
+      // than discarding them later keeps them out of the trace as well: they
+      // were never candidates, so reporting them as rejected would be noise.
+      if (selection !== null && policyKey !== selection.policyKey) {
+        continue;
+      }
+
       // Track whether any rule in this policy produced a match for this target
       let policyHadMatch = false;
 
@@ -187,9 +291,14 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
       let policyGovernsTarget = false;
 
       for (const r of rules) {
+        const ruleId = String(r?.id ?? "");
+
+        if (selection !== null && ruleId !== selection.ruleId) {
+          continue;
+        }
+
         if (wantTrace) traceBase!.summary.rulesSeen += 1;
 
-        const ruleId = String(r?.id ?? "");
         const priority = Number(r?.priority ?? 0);
 
         // Scope is what the policy is *about*, so it is read before anything
@@ -198,7 +307,10 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
         // policy's own default for the global deny-by-default, silently denying
         // everything that rule covered — far more than turning a rule off should
         // ever mean.
-        if (r?.target && targetMatch(r.target, input.target)) {
+        // A rule named directly is in scope by definition: the caller asked for
+        // this rule, so its policy is the one being consulted and its default is
+        // the one that stands in if the rule does not fire.
+        if (selection !== null || (r?.target && target && targetMatch(r.target, target))) {
           policyGovernsTarget = true;
         }
 
@@ -217,8 +329,10 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
           continue;
         }
 
-        // target mismatch
-        if (!r?.target || !targetMatch(r.target, input.target)) {
+        // Target mismatch. Skipped when the rule was named: the caller addressed
+        // it directly, so what it happens to target says what it is about, not
+        // whether it was selected.
+        if (selection === null && (!r?.target || !target || !targetMatch(r.target, target))) {
           if (wantTrace) {
             traceBase!.rules.push({
               policyKey,
@@ -496,9 +610,13 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
   }
 
   return {
-    evaluate(input: EvaluateInput) {
-      return coreEvaluate(input, false);
-    },
+    // Asserted rather than inferred: an object-literal method cannot carry the
+    // overload list that makes the return type follow the option, so the
+    // signature is declared once on `PolicyEngine` and this implementation is
+    // checked against its widest form.
+    evaluate: ((input: EvaluateInput, options?: EvaluateOptions) => (
+      shapeDecision(coreEvaluate(input, false), options)
+    )) as PolicyEngine["evaluate"],
 
     evaluateWithTrace(input: EvaluateInput, options?: TraceOptions): DecisionWithOptionalTrace {
         const merged: TraceOptions = {

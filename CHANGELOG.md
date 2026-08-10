@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-08-07
+
+Additive. `evaluate(input)` with one argument returns exactly what it did in
+2.0.0; every existing test passes untouched.
+
+### Added
+
+- **`asBoolean`, `asBinary` and `effectOnly`** on `evaluate`, for call sites that
+  branch on the outcome and never read the rest:
+
+  ```ts
+  if (!govplane.evaluate({ target, context }, { asBoolean: true })) return forbidden();
+  ```
+
+  `allow` and `custom` are true; `deny`, `kill_switch` and **`throttle`** are
+  false. Throttle reduces to false despite permitting the action, because a
+  boolean cannot carry the limit and a caller seeing `true` would proceed at an
+  unbounded rate — failing open on the effect that exists to bound it. Anything
+  acting on throttles must read the full decision.
+
+  The return type follows the option, so none of the three needs narrowing.
+  Setting more than one throws `ConfigurationError` (`INVALID_EVALUATE_OPTIONS`)
+  rather than silently choosing. `evaluateWithTrace` is unaffected — a trace
+  beside a bare boolean would have nothing to explain.
+
+- **Evaluating a rule by name**, instead of by target:
+
+  ```ts
+  govplane.evaluate({ ruleId: 'deny-after-five', policyKey: 'login-protection', context });
+  ```
+
+  Target matching is skipped; `context` still applies. If the rule does not fire,
+  its owning policy's default applies — so naming a rule and naming its target
+  give the same answer, which the suite asserts directly rather than by
+  inspection.
+
+  Rule ids are unique within a policy but not across a bundle, so a bare `ruleId`
+  resolves to the first match **in bundle order**; `policyKey` removes the
+  ambiguity. A rule or policy that is not there throws the new
+  `RuleNotFoundError` (`RULE_NOT_FOUND`) rather than returning a denial: naming
+  something absent is a caller mistake, and reporting it as `deny` would leave a
+  typo looking like a decision nobody investigates.
+
 ## [2.0.0] - 2026-08-02
 
 A rebuild around one verification path and two bundle sources. The evaluation
