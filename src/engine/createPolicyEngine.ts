@@ -56,6 +56,23 @@ interface EngineOpts {
   onTraceSinkError?: (err: unknown) => void;
 
   /**
+   * Called with every decision, unsampled, before any output shaping.
+   *
+   * The companion to `traceSink`, and deliberately a different thing. A trace
+   * carries full detail and is therefore sampled and budgeted, which makes it
+   * useless for counting: `evaluate()` emits none at all, and
+   * `evaluateWithTrace()` emits 1% of them by default. This hook fires on every
+   * evaluation through either method and receives the decision before
+   * `shapeDecision` reduces it to a boolean or a bare effect, so `policyKey`
+   * and `ruleId` are still present.
+   *
+   * It runs on the hot path. Keep it to a counter increment, and note that
+   * anything thrown here is swallowed rather than allowed to fail the
+   * evaluation.
+   */
+  onDecision?: (decision: Decision) => void;
+
+  /**
    * When true, custom effect `value` strings are JSON-parsed and the result
    * is attached as `parsedValue` on the decision.  Parsing errors are
    * silently swallowed and `parsedValue` is left undefined.
@@ -609,16 +626,8 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
     };
   }
 
-  return {
-    // Asserted rather than inferred: an object-literal method cannot carry the
-    // overload list that makes the return type follow the option, so the
-    // signature is declared once on `PolicyEngine` and this implementation is
-    // checked against its widest form.
-    evaluate: ((input: EvaluateInput, options?: EvaluateOptions) => (
-      shapeDecision(coreEvaluate(input, false), options)
-    )) as PolicyEngine["evaluate"],
-
-    evaluateWithTrace(input: EvaluateInput, options?: TraceOptions): DecisionWithOptionalTrace {
+  /** The original `evaluateWithTrace` body, unchanged. */
+  const evaluateWithTraceInner = (input: EvaluateInput, options?: TraceOptions): DecisionWithOptionalTrace => {
         const merged: TraceOptions = {
           ...(opts.traceDefaults ?? {}),
           ...(options ?? {}),
@@ -702,7 +711,44 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
 
         // fallback: no trace
         return baseDecision;
-      },
+      };
+
+  /**
+   * Fires the decision hook without letting it affect the decision.
+   *
+   * A counter in a telemetry module has no business failing an authorization
+   * call, so a throw here is swallowed the same way a trace sink's is.
+   */
+  const notifyDecision = (decision: Decision): void => {
+    if (!opts.onDecision) return;
+    try {
+      opts.onDecision(decision);
+    } catch (err) {
+      opts.onTraceSinkError?.(err);
+    }
+  };
+
+  return {
+    // Asserted rather than inferred: an object-literal method cannot carry the
+    // overload list that makes the return type follow the option, so the
+    // signature is declared once on `PolicyEngine` and this implementation is
+    // checked against its widest form.
+    evaluate: ((input: EvaluateInput, options?: EvaluateOptions) => {
+      const decision = coreEvaluate(input, false);
+      notifyDecision(decision);
+      return shapeDecision(decision, options);
+    }) as PolicyEngine["evaluate"],
+
+    evaluateWithTrace(input: EvaluateInput, options?: TraceOptions): DecisionWithOptionalTrace {
+      // Wrapped so the hook fires exactly once regardless of which branch the
+      // trace level takes, and whether a trace was emitted at all. Counting must
+      // not inherit tracing's sampling.
+      const traced = evaluateWithTraceInner(input, options);
+      notifyDecision(traced);
+      return traced;
+    },
+
+
       flushTraces: async () => {
         if (!dispatcher) return;
         await dispatcher.flush();

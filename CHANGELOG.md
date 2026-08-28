@@ -5,6 +5,184 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-08-22
+
+Additive. Every existing call site behaves exactly as it did in 2.1.0, and the
+whole 2.1.0 test suite passes untouched. Nothing below is loaded unless you
+configure it.
+
+### Added
+
+- **Ingestion switches on `observe`.** Data ingestion is metered and billed, so
+  what leaves your process is something you name rather than something that
+  follows from configuring an endpoint:
+
+  ```ts
+  observe: {
+    endpoint: 'https://<tenantId>.ingest.govplane.com',
+    enabled: true,
+    ingestDecisionTracing: true,     // what your policies decided
+    ingestCustomMetrics: true,       // what your application reports
+    ingestPerformanceMetrics: false, // what this process is doing
+  }
+  ```
+
+  `enabled` is required rather than defaulted. Configuring an ingest endpoint is
+  not the same as consenting to be billed for what goes to it, and a flag
+  defaulting either way would make one of those two things happen silently.
+
+  `enabled: true` honours the categories exactly as written, each **off** until
+  named — a master switch that turned everything on by itself would be a cost
+  control that increases costs. `enabled: false` sends nothing whatever else is
+  set, and returns before the observability module is loaded: no chunk fetched,
+  no timer, no allocation.
+
+  `ingestPerformanceMetrics` is the expensive one. Its metrics are per-instance
+  by nature, so the cost scales with replica count rather than with metric
+  count. It also takes `{ intervalSeconds }`.
+
+  The engine's `onDecision` hook is not registered at all when decision tracing
+  is off, so an unused stream costs nothing on the evaluation path. A caller's
+  own `onDecision` is unaffected.
+
+  Calling `client.observe.event()`, `.metric()` or `.record()` with
+  `ingestCustomMetrics` off records nothing and raises one message through
+  `onError`. It never throws, and it warns **once per method** rather than once
+  per call — `event` is designed to be called at request rate, and a warning per
+  call would be a worse outage than the one it reports. Enabling ingestion with
+  no category raises once at construction.
+
+- **`onDecision`** on every client, local or remote. Fires on each evaluation,
+  unsampled, through both `evaluate()` and `evaluateWithTrace()`:
+
+  ```ts
+  createLocalClient({ bundlePath, allowUnsigned: true,
+    onDecision: (d) => metrics.increment('policy.decision', { outcome: d.decision }),
+  });
+  ```
+
+  The counting companion to `trace.onDecisionTrace`, and deliberately a
+  different thing. A trace carries full detail, so it is sampled and budgeted —
+  `evaluate()` emits none at all and `evaluateWithTrace()` emits 1% by default.
+  That describes decisions but cannot count them. `onDecision` is the reverse:
+  cheap, complete, and carrying only identifiers.
+
+  It receives the decision **before** output shaping, so `policyKey` and
+  `ruleId` are present even where the call site asked for a bare boolean via
+  `asBoolean`. It runs on the hot path; anything thrown is swallowed rather than
+  allowed to fail an evaluation.
+
+  Generic and vendor-neutral: point it at Prometheus, StatsD or a log line. No
+  account required.
+
+- **Observability for Govplane Cloud subscribers**, via a new `observe` block on
+  `createRemoteClient`:
+
+  ```ts
+  observe: {
+    endpoint: 'https://<tenantId>.ingest.govplane.com',
+    source: 'checkout-api',
+    healthMonitor: true,
+  }
+  ```
+
+  Decisions are aggregated in-process and shipped as counts, keyed by policy,
+  rule, outcome, reason and bundle version, on a wall-clock-aligned 300-second
+  interval. One evaluation costs a map increment; one interval costs a handful
+  of data points regardless of traffic.
+
+  **Nothing from the evaluation input is sent** — not the context, not the
+  target, not a user id. There is no setting that adds it. The identifiers
+  describe which rule decided, never who it decided about.
+
+  Guarantees, each with a test: it cannot slow `evaluate()`, cannot throw at the
+  application, cannot grow without bound, cannot keep the process alive, and
+  cannot become a dependency of evaluation. If the endpoint is unreachable or
+  the project's quota is exhausted, policies keep evaluating and only telemetry
+  stops.
+
+  `client.observe.flush()` ships the current bucket; `close()` stops timers and
+  makes a best-effort final flush without blocking on a slow endpoint.
+
+- **Custom application metrics** on `client.observe`, so a rule can correlate a
+  policy's behaviour with its consequences:
+
+  ```ts
+  client.observe?.event('payment.failed', {
+    category: 'error_rate',
+    tags: { provider: 'stripe' },
+  });
+  client.observe?.metric('checkout.queue_depth', depth, { unit: 'count' });
+  ```
+
+  `event` counts and sums; `metric` measures and reduces (`last` by default, or
+  `avg`/`min`/`max`/`sum`). Both aggregate on the decision interval and ship in
+  the same request, so calling `event()` per request costs a map increment
+  rather than a network call.
+
+  Limits — 10 tags, 200-character values, 500 distinct series — are enforced
+  client-side and deliberately tighter than gp-data's. gp-data validates a batch
+  all-or-nothing, so one malformed custom point would otherwise discard every
+  decision counter travelling with it. Rejected points are reported through
+  `onError` with the reason; the rest of the interval still ships.
+
+  Past the series ceiling new series are **refused** rather than folded into an
+  overflow bucket. Decision series names come from the bundle and are bounded by
+  it; custom names come from the application, so an unbounded set is a caller bug
+  that folding would hide.
+
+- **`client.observe.record()`** for correlated occurrences — the drill-down that
+  aggregated metrics cannot express:
+
+  ```ts
+  const { trace } = client.evaluateWithTrace(input, { level: 'full' });
+  client.observe?.record('payment declined at capture', {
+    traceId: trace?.traceId, level: 'error', code: 'card_declined',
+  });
+  ```
+
+  A trace id is high-cardinality and cannot be a tag on a summed series, so this
+  keeps whole entries and ships them to the log endpoint, in their own request
+  sent before the metric batch.
+
+  It does **not** aggregate: one call is one stored entry. Bounded hard at 200
+  records per interval, 1,000-character messages and 8 KB of metadata, because a
+  `record()` left in a hot path would otherwise consume a project's storage
+  quota. Overflow is reported once per interval, not once per dropped record,
+  and the message says to use `event()` instead.
+
+- **`healthMonitor`**, off by default, sampling process resource and runtime
+  health every 60 seconds: resident memory, memory against the *container*
+  limit, heap ratio, CPU, event-loop lag p99, uptime, and how stale the bundle
+  in force is.
+
+  The metric names are a contract shared across Govplane's SDKs, so an alert
+  rule written once behaves the same whether the service is Node or Python.
+
+  Opt-in because health metrics are inherently per-instance: their storage cost
+  scales with replica count, which should be a decision rather than a discovery.
+  `memory.limit_ratio` is omitted rather than guessed where no container limit
+  can be read — `os.totalmem()` reports the host's memory inside a container,
+  which would look plausible and be wrong.
+
+- **`@govplane/runtime-sdk/observe`** subpath export, for callers driving the
+  aggregator or health sampler themselves. Importing the subpath is the only way
+  to load this code; an application that never imports it does not carry it.
+
+### Fixed
+
+- `createRemoteClient` silently dropped a caller-supplied `onDecision`, since it
+  copied its client options field by field and had no branch for it. Found by an
+  end-to-end test rather than a unit test, because each half worked in
+  isolation.
+
+### Notes
+
+`evaluateWithTrace` is unchanged and remains the way to obtain a trace as a
+return value. `onDecision` does not replace it: it is a side effect that leaves
+every return type alone, which is why counting could be added without touching
+a single existing signature.
+
 ## [2.1.0] - 2026-08-07
 
 Additive. `evaluate(input)` with one argument returns exactly what it did in

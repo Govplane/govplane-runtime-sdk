@@ -1,7 +1,7 @@
 {
   "name": "@govplane/runtime-sdk",
-  "version": "2.1.0",
-  "description": "Govplane Runtime SDK — evaluate Govplane policy bundles in your application, from a local file or from Govplane Cloud.",
+  "version": "2.2.0",
+  "description": "Govplane Runtime SDK \u2014 evaluate Govplane policy bundles in your application, from a local file or from Govplane Cloud.",
   "keywords": [
     "govplane",
     "policy",
@@ -28,7 +28,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./observe": {
+      "types": "./dist/observe/index.d.ts",
+      "default": "./dist/observe/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -61,5 +66,6 @@
     "jest": "^29.7.0",
     "ts-jest": "^29.2.5",
     "typescript": "^5.6.3"
-  }
+  },
+  "sideEffects": false
 }

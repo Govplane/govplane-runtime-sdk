@@ -288,6 +288,83 @@ console.log(formatTrace(result.trace, { includeDiscarded: true }));
 Levels are `off`, `errors`, `sampled` and `full`. Traces carry no context
 values — only rule identifiers, priorities and outcomes.
 
+Traces are sampled and budgeted, so they describe decisions rather than count
+them. To count, use `onDecision` below.
+
+### Counting decisions
+
+`onDecision` fires on **every** evaluation, unsampled, through both `evaluate()`
+and `evaluateWithTrace()`:
+
+```ts
+const govplane = await createLocalClient({
+  bundlePath: './bundle.json',
+  allowUnsigned: true,
+  onDecision: (decision) => {
+    metrics.increment('policy.decision', {
+      policy: decision.policyKey ?? 'none',
+      outcome: decision.decision,
+    });
+  },
+});
+```
+
+It receives the decision before output shaping, so `policyKey` and `ruleId` are
+present even when the call site asked for a bare boolean. It runs on the hot
+path — keep it to a counter increment. Anything thrown is swallowed rather than
+allowed to fail the evaluation.
+
+Available on any client, local or remote, with no account required.
+
+## Observability
+
+Govplane Cloud subscribers can report decision counts and runtime health
+directly from the SDK:
+
+```ts
+const govplane = await createRemoteClient({
+  ...remoteConfig,
+  observe: {
+    enabled: true,
+    endpoint: 'https://<tenantId>.ingest.govplane.com',
+    source: 'checkout-api',
+
+    ingestDecisionTracing: true,      // what your policies decided
+    ingestCustomMetrics: true,        // what your application reports
+    ingestPerformanceMetrics: false,  // what this process is doing
+  },
+});
+```
+
+Ingestion is metered and billed, so each category is off until you name it.
+`ingestPerformanceMetrics` is the costly one — its metrics are per-instance, so
+the bill scales with replica count rather than metric count. `enabled: false`
+switches everything off without unpicking the rest of the config.
+
+Decisions are aggregated in-process and shipped as counts on a 300-second
+interval. Nothing from the evaluation input is sent — only which rule decided,
+what it decided, and under which bundle version.
+
+Your own application metrics travel the same path, which is what lets an alert
+rule correlate a policy's behaviour with its consequences:
+
+```ts
+client.observe?.event('payment.failed', {
+  category: 'error_rate',
+  tags: { provider: 'stripe' },
+});
+client.observe?.metric('checkout.queue_depth', depth, { unit: 'count' });
+```
+
+It cannot slow down `evaluate()`, cannot throw at your application, cannot grow
+without bound, and cannot keep your process alive. If the endpoint is
+unreachable or your quota is exhausted, policies keep evaluating and only
+telemetry stops.
+
+Off unless configured; the code is not loaded unless it is.
+
+See [docs/observability.md](docs/observability.md) for the full reference.
+
 ## Errors
 
 Every error carries a stable `code`:

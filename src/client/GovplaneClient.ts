@@ -76,6 +76,22 @@ export interface ClientOptions {
   trace?: TraceOptionsConfig | undefined;
   /** Called when a background reload fails. The previous bundle stays in force. */
   onError?: ((error: unknown) => void) | undefined;
+  /**
+   * Called with every decision, unsampled, before output shaping.
+   *
+   * The counting companion to `trace.onDecisionTrace`. A trace carries full
+   * detail and is therefore sampled and budgeted — `evaluate()` emits none at
+   * all — so it can describe a decision but cannot count one. This fires on
+   * every evaluation through either method, and receives the decision while
+   * `policyKey` and `ruleId` are still on it.
+   *
+   * Generic and vendor-neutral, like the trace hook: Govplane's own
+   * observability module is one consumer, and a caller may equally point it at
+   * their own metrics client.
+   *
+   * It runs on the hot path. Keep it cheap; anything thrown is swallowed.
+   */
+  onDecision?: ((decision: Decision) => void) | undefined;
 }
 
 /**
@@ -126,6 +142,7 @@ const buildEngine = (
   ...(options.trace?.onTraceError === undefined
     ? {}
     : { onTraceSinkError: options.trace.onTraceError }),
+  ...(options.onDecision === undefined ? {} : { onDecision: options.onDecision }),
 });
 
 /**
