@@ -1,6 +1,6 @@
 {
   "name": "@govplane/runtime-sdk",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Govplane Runtime SDK \u2014 evaluate Govplane policy bundles in your application, from a local file or from Govplane Cloud.",
   "keywords": [
     "govplane",

@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-08-29
+
+### Security
+
+- **Polynomial-time regular expression on the ingest endpoint.** Normalising
+  `observe.endpoint` trimmed trailing slashes with `replace(/\/+$/, '')`, which
+  backtracks quadratically: for each starting position the engine consumes the
+  run of slashes, fails the end anchor and unwinds. A value of many slashes
+  followed by any other character therefore costs O(n²) — 200 000 slashes took
+  **15.8 seconds**, synchronously, on the thread constructing the client.
+
+  Replaced with a single-pass scan, which is 0.006 ms on the same input. The
+  behaviour is unchanged for every well-formed endpoint.
+
+  The endpoint is application configuration rather than request data, so this is
+  not remotely exploitable. It is worth a patch release regardless: the value is
+  usually assembled from an environment variable, this runs inside a customer's
+  process, and blocking it for fifteen seconds at startup is a real failure
+  whatever the provenance of the string.
+
+  **The bundle endpoint was never affected** — `RemoteBundleSource` builds its
+  URL with `new URL()` and touches no regular expression. Only the optional
+  observability transport was involved, so an installation that never configured
+  `observe` was never exposed.
+
+  Reported by CodeQL.
+
 ## [2.2.0] - 2026-08-22
 
 Additive. Every existing call site behaves exactly as it did in 2.1.0, and the
@@ -12,12 +39,6 @@ whole 2.1.0 test suite passes untouched. Nothing below is loaded unless you
 configure it.
 
 ### Added
-
-- **Fixed a polynomial-time regular expression on the ingest endpoint.** The
-  trailing-slash trim used `replace(/\/+$/, '')`, which backtracks
-  quadratically: 200 000 slashes took **15.8 seconds**, synchronously, on the
-  thread constructing the client. Replaced with a single-pass scan. Flagged by
-  CodeQL; the bundle endpoint was never affected, as it goes through `new URL()`.
 
 - **Ingestion switches on `observe`.** Data ingestion is metered and billed, so
   what leaves your process is something you name rather than something that
