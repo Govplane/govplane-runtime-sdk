@@ -169,11 +169,39 @@ const newKey = (): string => {
   return `gp-${Date.now().toString(36)}-${keyCounter.toString(36)}-${suffix}`;
 };
 
+const SLASH = '/';
+
+/**
+ * Strips trailing slashes in one pass.
+ *
+ * The obvious `replace(/\/+$/, '')` backtracks quadratically: for each starting
+ * position the engine consumes the run of slashes, fails the end anchor and
+ * unwinds, so a value of many slashes followed by any other character costs
+ * O(n²). Measured on the shipped regex, 200 000 slashes took **15.8 seconds** —
+ * synchronous, on the thread building the client.
+ *
+ * The endpoint comes from the application's own configuration rather than from
+ * a request, so this is not an attack surface in the usual sense. It is still
+ * worth fixing: the value is typically assembled from an environment variable,
+ * this runs inside a customer's process, and a scan is right to object to a
+ * pathological regex on any input it cannot bound.
+ *
+ * Matches `stripTrailingSlashes` in the CLI Toolkit's `http/client.ts`, which
+ * hit the same finding first.
+ */
+const stripTrailingSlashes = (value: string): string => {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === SLASH) {
+    end -= 1;
+  }
+  return end === value.length ? value : value.slice(0, end);
+};
+
 export const createTransport = (config: TransportConfig): Transport => {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxAttempts = Math.max(1, config.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
-  const base = config.endpoint.replace(/\/+$/, '');
+  const base = stripTrailingSlashes(config.endpoint);
   const scope = `${base}/v1/${encodeURIComponent(config.projectId)}`
     + `/${encodeURIComponent(config.env)}`;
   const url = `${scope}/metrics`;

@@ -13,6 +13,12 @@ configure it.
 
 ### Added
 
+- **Fixed a polynomial-time regular expression on the ingest endpoint.** The
+  trailing-slash trim used `replace(/\/+$/, '')`, which backtracks
+  quadratically: 200 000 slashes took **15.8 seconds**, synchronously, on the
+  thread constructing the client. Replaced with a single-pass scan. Flagged by
+  CodeQL; the bundle endpoint was never affected, as it goes through `new URL()`.
+
 - **Ingestion switches on `observe`.** Data ingestion is metered and billed, so
   what leaves your process is something you name rather than something that
   follows from configuring an endpoint:

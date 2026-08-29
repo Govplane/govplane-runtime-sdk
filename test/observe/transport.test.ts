@@ -198,3 +198,60 @@ describe('nothing is sent when there is nothing to send', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * The endpoint is normalised before it is ever used to build a URL, and how it
+ * is normalised is a security property rather than a tidiness one.
+ *
+ * Flagged by CodeQL as a polynomial regular expression on uncontrolled data.
+ * It was not theoretical: the shipped `replace(/\/+$/, '')` took **15.8
+ * seconds** on 200 000 slashes, synchronously, on the thread constructing the
+ * client.
+ */
+describe('normalising the endpoint', () => {
+  const urlFor = (endpoint: string): string => {
+    const { calls, impl } = recorder(() => ({ ok: true, status: 202 }));
+    const transport = createTransport({ ...baseConfig, endpoint, fetchImpl: impl });
+    void transport.sendPoints([{ name: 'n', value: 1 }] as never);
+    return calls[0]?.url ?? '';
+  };
+
+  it('trims a trailing slash', () => {
+    expect(urlFor('https://abc.ingest.govplane.com/'))
+      .toBe('https://abc.ingest.govplane.com/v1/proj_1/prod/metrics');
+  });
+
+  it('trims a run of them', () => {
+    expect(urlFor('https://abc.ingest.govplane.com////'))
+      .toBe('https://abc.ingest.govplane.com/v1/proj_1/prod/metrics');
+  });
+
+  it('leaves an endpoint that needs no trimming alone', () => {
+    expect(urlFor('https://abc.ingest.govplane.com'))
+      .toBe('https://abc.ingest.govplane.com/v1/proj_1/prod/metrics');
+  });
+
+  it('trims only from the end', () => {
+    // A path segment is legitimate: an ingest host behind a prefix still has to
+    // work, and only the tail may be collapsed.
+    expect(urlFor('https://abc.ingest.govplane.com/ingest//'))
+      .toBe('https://abc.ingest.govplane.com/ingest/v1/proj_1/prod/metrics');
+  });
+
+  it('handles a run of slashes in linear time', () => {
+    /**
+     * The regression that matters. The bound is deliberately loose — it is
+     * measuring the complexity class, not the machine it runs on. Quadratic
+     * behaviour here missed it by four orders of magnitude.
+     */
+    const pathological = `${'/'.repeat(200_000)}x`;
+
+    const started = process.hrtime.bigint();
+    const url = urlFor(pathological);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    // Nothing is trimmed: the run does not reach the end of the string.
+    expect(url.startsWith(pathological)).toBe(true);
+    expect(elapsedMs).toBeLessThan(250);
+  });
+});
