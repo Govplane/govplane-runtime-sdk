@@ -46,6 +46,19 @@ const PII_KEY_PATTERNS: RegExp[] = [
   /passport/i,
 ];
 
+/**
+ * Whether a context key looks like it names personal data.
+ *
+ * The same heuristic `validateContext` applies under `blockLikelyPiiKeys`,
+ * exported so that anything else which would carry a context value out of the
+ * process — decision records name keys to include — can be checked against it
+ * at configuration time. It is a substring match and deliberately broad: it
+ * would rather flag `shippingScore` than let `emailAddress` through.
+ */
+export function looksLikePiiKey(key: string): boolean {
+  return PII_KEY_PATTERNS.some((re) => re.test(key));
+}
+
 const DEFAULT_POLICY: Required<Omit<ContextPolicy, "allowedKeys">> = {
   maxStringLen: 80,
   maxArrayLen: 25,
@@ -68,12 +81,8 @@ export function validateContext(
       throw new Error(`Context key not allowed: ${k}`);
     }
 
-    if (blockLikelyPiiKeys) {
-      for (const re of PII_KEY_PATTERNS) {
-        if (re.test(k)) {
-          throw new Error(`Context key looks like PII and is blocked: ${k}`);
-        }
-      }
+    if (blockLikelyPiiKeys && looksLikePiiKey(k)) {
+      throw new Error(`Context key looks like PII and is blocked: ${k}`);
     }
 
     if (v === null || v === undefined) continue;

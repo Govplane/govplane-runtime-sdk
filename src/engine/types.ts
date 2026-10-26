@@ -1,9 +1,24 @@
 export interface Target { service: string; resource: string; action: string }
 
+/**
+ * What a `requires_approval` effect tells the host about the approval it wants.
+ *
+ * Every field is optional and none is enforced by the engine: the SDK gates the
+ * action and hands the descriptor back untouched, and the host routes, waits
+ * and expires as it sees fit — exactly as a throttle is a description of a
+ * limit rather than a limiter.
+ */
+export interface ApprovalDescriptor {
+  reason?: string;
+  approvers?: string[];
+  expiresInSeconds?: number;
+}
+
 export type Effect =
   | { type: "allow" }
   | { type: "deny" }
   | { type: "kill_switch"; killSwitch: { service: string; reason?: string } }
+  | { type: "requires_approval"; approval?: ApprovalDescriptor }
   | { type: "throttle"; throttle: { limit: number; windowSeconds: number; key: string } }
   | { type: "custom"; value: string };
 
@@ -36,6 +51,7 @@ export type PolicyDefault =
   | { effect: "allow" }
   | { effect: "deny" }
   | { effect: "kill_switch"; killSwitch: { service: string; reason?: string } }
+  | { effect: "requires_approval"; approval?: ApprovalDescriptor }
   | { effect: "throttle"; throttle: { limit: number; windowSeconds: number; key: string } }
   | { effect: "custom"; customEffect: string };
 
@@ -64,12 +80,24 @@ export interface RuntimeBundleV1 {
   policies: RuntimePolicy[];
 }
 
+/**
+ * Why a decision came out the way it did.
+ *
+ * `rule` and `default` are the two answers a bundle can give. `signal_missing`
+ * is the engine refusing to consult the bundle at all, because a signal the
+ * client declared it depends on was not supplied — see `SignalsConfig`. It is
+ * only ever paired with the `onMissing` outcome, and it carries the names of
+ * the signals that were missing.
+ */
+export type DecisionReason = "default" | "rule" | "signal_missing";
+
 export type Decision =
-  | { decision: "allow"; reason: "default" | "rule"; policyKey?: string; ruleId?: string }
-  | { decision: "deny"; reason: "default" | "rule"; policyKey?: string; ruleId?: string }
-  | { decision: "kill_switch"; reason: "default" | "rule"; policyKey?: string; ruleId?: string; killSwitch: { service: string; reason?: string } }
-  | { decision: "throttle"; reason: "default" | "rule"; policyKey?: string; ruleId?: string; throttle: { limit: number; windowSeconds: number; key: string } }
-  | { decision: "custom"; reason: "default" | "rule"; policyKey?: string; ruleId?: string; value: string; parsedValue?: unknown };
+  | { decision: "allow"; reason: DecisionReason; policyKey?: string; ruleId?: string; missingSignals?: string[] }
+  | { decision: "deny"; reason: DecisionReason; policyKey?: string; ruleId?: string; missingSignals?: string[] }
+  | { decision: "kill_switch"; reason: DecisionReason; policyKey?: string; ruleId?: string; killSwitch: { service: string; reason?: string }; missingSignals?: string[] }
+  | { decision: "requires_approval"; reason: DecisionReason; policyKey?: string; ruleId?: string; approval?: ApprovalDescriptor }
+  | { decision: "throttle"; reason: DecisionReason; policyKey?: string; ruleId?: string; throttle: { limit: number; windowSeconds: number; key: string } }
+  | { decision: "custom"; reason: DecisionReason; policyKey?: string; ruleId?: string; value: string; parsedValue?: unknown };
 
 export type TraceDiscardReason =
 | "disabled"
@@ -96,6 +124,7 @@ export interface DecisionTrace {
     considered: {
       kill_switch: number;
       deny: number;
+      requires_approval: number;
       throttle: number;
       allow: number;
       custom: number;
@@ -175,7 +204,10 @@ export const isRuleInput = (
  * preference worth guessing at.
  */
 export interface EvaluateOptions {
-  /** `allow` and `custom` are true; `deny`, `kill_switch` and `throttle` are false. */
+  /**
+   * `allow` and `custom` are true; `deny`, `kill_switch`, `requires_approval`
+   * and `throttle` are false.
+   */
   asBoolean?: boolean;
   /** The same mapping, as `1` and `0`. */
   asBinary?: boolean;
@@ -222,6 +254,7 @@ export interface DecisionTraceCompact {
     considered: {
       kill_switch: number;
       deny: number;
+      requires_approval: number;
       throttle: number;
       allow: number;
       custom: number;
@@ -263,6 +296,7 @@ export interface StructuredTraceEvent {
     considered: {
       kill_switch: number;
       deny: number;
+      requires_approval: number;
       throttle: number;
       allow: number;
       custom: number;

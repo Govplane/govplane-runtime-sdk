@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "orgId": "org_test",
+  "projectId": "proj_test",
+  "env": "prod",
+  "generatedAt": "2026-09-20T12:00:00.000Z",
+  "bundleVersion": 1,
+  "policies": [
+    {
+      "policyKey": "a-approval-default",
+      "activeVersion": 1,
+      "defaults": { "effect": "requires_approval" },
+      "rules": []
+    },
+    {
+      "policyKey": "b-approval-rule",
+      "activeVersion": 2,
+      "defaults": { "effect": "allow" },
+      "rules": [
+        {
+          "id": "gate-large-transfers",
+          "status": "active",
+          "priority": 10,
+          "target": { "service": "payments", "resource": "transfer", "action": "create" },
+          "when": { "op": "gt", "path": "ctx.amount", "value": 10000 },
+          "effect": {
+            "type": "requires_approval",
+            "approval": {
+              "reason": "wire above 10k",
+              "approvers": ["cfo", "ciso"],
+              "expiresInSeconds": 3600
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

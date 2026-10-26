@@ -456,3 +456,113 @@ describe('traces reflect the same decision', () => {
     expect(engine.evaluateWithTrace({ target: TARGET }, { level: 'off' }).trace).toBeUndefined();
   });
 });
+
+describe('requires_approval', () => {
+  const APPROVAL = { reason: 'PII export', approvers: ['security'], expiresInSeconds: 900 };
+
+  it('sits below deny', () => {
+    const decision = decide(bundleOf([{
+      policyKey: 'p',
+      rules: [
+        { id: 'gate', effect: { type: 'requires_approval', approval: APPROVAL }, priority: 100 },
+        { id: 'deny', effect: { type: 'deny' }, priority: 1 },
+      ],
+    }]));
+
+    // A refusal still outranks a gate, whatever the priorities say: an action
+    // that is denied is not one that a human can approve into existence.
+    expect(decision).toMatchObject({ decision: 'deny', ruleId: 'deny' });
+  });
+
+  it('sits below kill_switch', () => {
+    const decision = decide(bundleOf([{
+      policyKey: 'p',
+      rules: [
+        { id: 'gate', effect: { type: 'requires_approval' }, priority: 100 },
+        { id: 'kill', effect: { type: 'kill_switch', killSwitch: KILL }, priority: 1 },
+      ],
+    }]));
+
+    expect(decision.decision).toBe('kill_switch');
+  });
+
+  it('outranks throttle, allow and custom', () => {
+    const decision = decide(bundleOf([{
+      policyKey: 'p',
+      rules: [
+        { id: 'allow', effect: { type: 'allow' }, priority: 100 },
+        { id: 'throttle', effect: { type: 'throttle', throttle: THROTTLE }, priority: 90 },
+        { id: 'custom', effect: { type: 'custom', value: 'x' }, priority: 80 },
+        { id: 'gate', effect: { type: 'requires_approval', approval: APPROVAL }, priority: 1 },
+      ],
+    }]));
+
+    // The point of the slot: a permissive rule elsewhere must never let an
+    // action that needs a human slip through un-gated.
+    expect(decision).toMatchObject({
+      decision: 'requires_approval', reason: 'rule', policyKey: 'p', ruleId: 'gate',
+    });
+  });
+
+  it('passes the descriptor through untouched and omits it when absent', () => {
+    const withDescriptor = decide(bundleOf([{
+      policyKey: 'p',
+      rules: [{ id: 'gate', effect: { type: 'requires_approval', approval: APPROVAL } }],
+    }]));
+    expect(withDescriptor).toMatchObject({ decision: 'requires_approval', approval: APPROVAL });
+
+    const bare = decide(bundleOf([{
+      policyKey: 'p',
+      rules: [{ id: 'gate', effect: { type: 'requires_approval' } }],
+    }]));
+    expect(bare.decision).toBe('requires_approval');
+    expect('approval' in bare).toBe(false);
+  });
+
+  it('applies as a policy default, with or without a descriptor', () => {
+    const governed = {
+      id: 'r', effect: { type: 'allow' }, when: { op: 'eq', path: 'ctx.x', value: 1 },
+    };
+
+    const plain = decide(bundleOf([{
+      policyKey: 'p', defaults: { effect: 'requires_approval' }, rules: [governed],
+    }]));
+    expect(plain)
+      .toMatchObject({ decision: 'requires_approval', reason: 'default', policyKey: 'p' });
+    expect(plain.ruleId).toBeUndefined();
+    expect('approval' in plain).toBe(false);
+
+    const described = decide(bundleOf([{
+      policyKey: 'p',
+      defaults: { effect: 'requires_approval', approval: APPROVAL },
+      rules: [governed],
+    }]));
+    expect(described).toMatchObject({ decision: 'requires_approval', approval: APPROVAL });
+
+    // A malformed descriptor on a default is dropped, not passed on: the host
+    // reads fields from it and a string has none.
+    const malformed = decide(bundleOf([{
+      policyKey: 'p',
+      defaults: { effect: 'requires_approval', approval: 'ask someone' },
+      rules: [governed],
+    }]));
+    expect(malformed.decision).toBe('requires_approval');
+    expect('approval' in malformed).toBe(false);
+  });
+
+  it('is counted and named in the trace', () => {
+    const bundle = bundleOf([{
+      policyKey: 'p',
+      rules: [
+        { id: 'allow', effect: { type: 'allow' }, priority: 100 },
+        { id: 'gate', effect: { type: 'requires_approval' }, priority: 1 },
+      ],
+    }]);
+    const engine = createPolicyEngine({ getBundle: () => bundle, validateContext: false });
+    const result = engine.evaluateWithTrace({ target: TARGET }, { level: 'full', force: true });
+
+    expect(result.trace?.summary.considered.requires_approval).toBe(1);
+    expect(result.trace?.summary.considered.allow).toBe(1);
+    expect(result.trace?.winner).toMatchObject({ ruleId: 'gate', effectType: 'requires_approval' });
+  });
+});

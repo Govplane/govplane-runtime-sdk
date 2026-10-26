@@ -57,3 +57,20 @@ test("structured trace JSON is stable and PII-safe", () => {
   expect(evt.traceId).toBeTruthy();
   expect((evt as any).context).toBeUndefined(); // ensure no context leaks
 });
+
+test("a signal_missing trace event carries no context either", () => {
+  const engine = createPolicyEngine({
+    getBundle: () => makeBundle() as any,
+    validateContext: false,
+    signals: { required: ["riskScore"] },
+  });
+  const out: any = (engine as any).evaluateWithTrace(
+    { target: { service: "api", resource: "public", action: "read" }, context: { secret: 1 } },
+    { level: "errors", sampling: 0 },
+  );
+
+  const evt = toStructuredTraceEvent({ level: "errors", decision: out, trace: out.trace });
+  expect(evt.reason).toBe("signal_missing");
+  expect(JSON.stringify(evt)).not.toContain("secret");
+  expect((evt as any).missingSignals).toBeUndefined();
+});

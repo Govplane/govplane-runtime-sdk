@@ -29,10 +29,9 @@ export default [
       // Modules export named building blocks on purpose; a default export would
       // make the public API harder to grow.
       'import-x/prefer-default-export': 'off',
-      // The WHATWG fetch types have been present and working since Node 18 and
-      // are formally stable from 21. The SDK supports Node 20 LTS, where they
-      // work — declaring 21 as the floor would exclude a supported LTS for a
-      // labelling technicality.
+      // The WHATWG fetch types are stable on every Node.js line the SDK
+      // supports. They are named explicitly so the rule does not depend on how
+      // it interprets the `||` range in `engines`.
       'n/no-unsupported-features/node-builtins': ['error', {
         ignores: ['fetch', 'Response', 'Request', 'Headers'],
       }],
@@ -74,6 +73,19 @@ export default [
       // Tests build fixtures on disk and generate key material. Synchronous
       // calls keep each test readable and ordered.
       'n/no-sync': 'off',
+    },
+  },
+  {
+    /**
+     * The benchmark is a script, not library code: it reports to whoever ran
+     * it, and it imports from the built package rather than from source.
+     */
+    files: ['bench/**/*.mjs'],
+    rules: {
+      'no-console': 'off',
+      'import-x/no-unresolved': 'off',
+      'no-restricted-syntax': 'off',
+      'n/no-process-exit': 'off',
     },
   },
   {

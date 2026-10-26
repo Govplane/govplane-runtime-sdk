@@ -16,7 +16,7 @@
 export { createLocalClient, type LocalClientConfig } from './client/createLocalClient.js';
 export { createRemoteClient, type RemoteClientConfig } from './client/createRemoteClient.js';
 export type {
-  ClientOptions, ClientStatus, EngineOptions, GovplaneClient, TraceOptionsConfig,
+  ClientOptions, ClientStatus, EngineOptions, GovplaneClient, SignalsStatus, TraceOptionsConfig,
 } from './client/GovplaneClient.js';
 
 // ─── The engine ───────────────────────────────────────────────────────────
@@ -28,6 +28,20 @@ export { createPolicyEngine } from './engine/createPolicyEngine.js';
 export { formatTrace } from './engine/formatTrace.js';
 export * from './engine/types.js';
 export * from './engine/context.js';
+export { targetMatch, targetMatchesScope } from './engine/target.js';
+export type { RequiredSignal, SignalsConfig, SignalsOnMissing } from './engine/signals.js';
+
+// ─── Decision records ─────────────────────────────────────────────────────
+//
+// The records themselves come from the client. `verifyRecordChain` is for
+// whoever stored them: it walks a sequence and says whether it is intact.
+
+export { hashRecord, verifyRecordChain } from './records/chain.js';
+export type { ChainProblem, ChainVerification } from './records/chain.js';
+export type {
+  DecisionRecord, DecisionRecordBundle, DecisionRecordSink, RecordConfig, RecordOverflow,
+  RecordStatus,
+} from './records/types.js';
 
 // ─── Bundles, canonicalisation and verification ───────────────────────────
 
@@ -58,5 +72,5 @@ export type { BundleSource, LoadedBundle, SourceDescription } from './source/typ
 
 export {
   BundleSignatureError, BundleValidationError, ConfigurationError, GovplaneError, HttpError,
-  RuleNotFoundError, SafeBundleValidationError,
+  RuleNotFoundError, SafeBundleValidationError, SignalMissingError,
 } from './errors/errors.js';

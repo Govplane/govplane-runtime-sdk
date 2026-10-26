@@ -7,12 +7,15 @@ import type { Decision, EvaluateOptions } from './types.js';
  * The mapping lives here rather than at each call site so the two entry points
  * cannot drift, and so the one judgement it encodes is written down once.
  *
- * That judgement is about `throttle`. `allow` and `custom` are permissions;
- * `deny` and `kill_switch` are plainly not. A throttle sits between them: the
- * action is permitted, but only within a limit that a boolean cannot carry. A
- * caller who reduced it to `true` would proceed while silently discarding the
- * rate limit — so it reduces to `false`, and anything that needs the limit reads
- * the full decision instead.
+ * That judgement is about `throttle` and `requires_approval`. `allow` and
+ * `custom` are permissions; `deny` and `kill_switch` are plainly not. A throttle
+ * sits between them: the action is permitted, but only within a limit that a
+ * boolean cannot carry. A caller who reduced it to `true` would proceed while
+ * silently discarding the rate limit — so it reduces to `false`, and anything
+ * that needs the limit reads the full decision instead. `requires_approval` is
+ * the same shape of answer: permitted only once a human has acted, which a
+ * boolean cannot express either, so it too is `false` until the host says
+ * otherwise.
  */
 
 const PERMISSIVE = new Set<Decision['decision']>(['allow', 'custom']);

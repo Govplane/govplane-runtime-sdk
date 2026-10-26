@@ -268,6 +268,83 @@ describe('createLocalClient', () => {
     client.close();
   });
 
+  it('enforces required signals and reports them in status', async () => {
+    write(signEcdsa(baseBundle()));
+
+    const client = await createLocalClient({
+      bundlePath,
+      verify: { algorithm: 'ECDSA_SHA_256', publicKey: PUBLIC_KEY },
+      engine: {
+        signals: {
+          required: ['riskScore', { signal: 'riskScore', when: { service: 'auth' } }],
+        },
+      },
+    });
+
+    expect(client.evaluate({ target: TARGET, context: { failedAttempts: 6 } })).toEqual({
+      decision: 'deny', reason: 'signal_missing', missingSignals: ['riskScore'],
+    });
+    expect(client.evaluate({ target: TARGET, context: { failedAttempts: 6, riskScore: 0.2 } }))
+      .toMatchObject({ decision: 'deny', reason: 'rule' });
+    expect(client.status().signals).toEqual({ required: ['riskScore'], onMissing: 'deny' });
+    client.close();
+  });
+
+  it('forwards onDecision and record to the client', async () => {
+    // 2.2.x dropped `onDecision` on the local path while forwarding it on the
+    // remote one; both paths are one client and must accept the same options.
+    write(signEcdsa(baseBundle()));
+    const seen: string[] = [];
+    const records: unknown[] = [];
+    const client = await createLocalClient({
+      bundlePath,
+      verify: { algorithm: 'ECDSA_SHA_256', publicKey: PUBLIC_KEY },
+      onDecision: (d) => { seen.push(d.decision); },
+      record: { sink: (batch) => { records.push(...batch); } },
+    });
+
+    client.evaluate({ target: TARGET, context: { failedAttempts: 6 } });
+    await client.flushRecords();
+    expect(seen).toEqual(['deny']);
+    expect(records[0]).toMatchObject({
+      bundle: { origin: 'local', signature: { algorithm: 'ECDSA_SHA_256', verified: true } },
+    });
+    client.close();
+  });
+
+  it('marks records unverified under allowUnsigned', async () => {
+    write(baseBundle());
+    const records: { bundle: { signature: { verified: boolean } } }[] = [];
+    const client = await createLocalClient({
+      bundlePath,
+      allowUnsigned: true,
+      record: { sink: (batch) => { records.push(...batch); } },
+    });
+    client.evaluate({ target: TARGET });
+    await client.flushRecords();
+    expect(records[0]?.bundle.signature).toEqual({ verified: false });
+    client.close();
+  });
+
+  it('leaves signals out of status when none are declared', async () => {
+    write(signEcdsa(baseBundle()));
+    const client = await createLocalClient({
+      bundlePath,
+      verify: { algorithm: 'ECDSA_SHA_256', publicKey: PUBLIC_KEY },
+    });
+    expect('signals' in client.status()).toBe(false);
+    client.close();
+  });
+
+  it('rejects a malformed signals block at construction', async () => {
+    write(signEcdsa(baseBundle()));
+    await expect(createLocalClient({
+      bundlePath,
+      verify: { algorithm: 'ECDSA_SHA_256', publicKey: PUBLIC_KEY },
+      engine: { signals: { required: [], onMissing: 'deny' } },
+    })).rejects.toMatchObject({ code: 'INVALID_CONFIGURATION' });
+  });
+
   it('produces a trace through the same engine', async () => {
     write(signEcdsa(baseBundle()));
 

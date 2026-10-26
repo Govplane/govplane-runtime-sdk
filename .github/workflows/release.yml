@@ -41,6 +41,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          check-latest: true
           cache: npm
 
       # Trusted publishing needs npm 11.5.1 or later; provenance needs 9.5.0.

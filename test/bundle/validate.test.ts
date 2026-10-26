@@ -143,6 +143,15 @@ describe('policy defaults', () => {
     expect(codes(withDefaults({ effect: 'custom' }))).toContain('INVALID_CUSTOM_DEFAULT');
     expect(codes(withDefaults({ effect: 'custom', customEffect: '{}' }))).toEqual([]);
   });
+
+  it('accepts requires_approval, with an optional object descriptor', () => {
+    expect(codes(withDefaults({ effect: 'requires_approval' }))).toEqual([]);
+    expect(codes(withDefaults({
+      effect: 'requires_approval', approval: { reason: 'PII export', approvers: ['security'] },
+    }))).toEqual([]);
+    expect(codes(withDefaults({ effect: 'requires_approval', approval: 'ask' })))
+      .toContain('INVALID_APPROVAL_DEFAULT');
+  });
 });
 
 describe('rules', () => {
@@ -191,6 +200,15 @@ describe('rules', () => {
     expect(codes(withRule({ ...base, effect: { type: 'maybe' } })))
       .toContain('INVALID_RULE_EFFECT');
     expect(codes(withRule({ ...base, effect: { type: 'custom' } })))
+      .toContain('INVALID_RULE_EFFECT');
+  });
+
+  it('accepts requires_approval and checks its descriptor is an object', () => {
+    expect(codes(withRule({ ...base, effect: { type: 'requires_approval' } }))).toEqual([]);
+    expect(codes(withRule({
+      ...base, effect: { type: 'requires_approval', approval: { expiresInSeconds: 900 } },
+    }))).toEqual([]);
+    expect(codes(withRule({ ...base, effect: { type: 'requires_approval', approval: ['a'] } })))
       .toContain('INVALID_RULE_EFFECT');
   });
 

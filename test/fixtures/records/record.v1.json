@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "id": "01JGX2W4K8N7QZ3M5Y6P8R9T0A",
+  "at": "2026-09-14T14:02:11.417Z",
+  "seq": 4211,
+  "bundle": {
+    "version": 7,
+    "generatedAt": "2026-09-12T09:31:00.000Z",
+    "checksum": "sha256:a91f0d0a2b7c1d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e",
+    "signature": { "algorithm": "ECDSA_SHA_256", "verified": true },
+    "origin": "local"
+  },
+  "target": { "service": "agent", "resource": "send_email", "action": "invoke" },
+  "decision": "deny",
+  "reason": "rule",
+  "policyKey": "data-handling",
+  "ruleId": "r_pii_export",
+  "contextKeysPresent": ["piiScore", "injectionScore", "tenant"],
+  "context": { "piiScore": 0.87, "tenant": "acme" }
+}

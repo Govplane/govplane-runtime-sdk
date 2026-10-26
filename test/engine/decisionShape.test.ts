@@ -40,6 +40,7 @@ const EFFECTS: [Decision['decision'], unknown][] = [
     throttle: { limit: 100, windowSeconds: 60, key: 'ctx.userId' },
   }],
   ['kill_switch', { type: 'kill_switch', killSwitch: { service: 'auth', reason: 'incident' } }],
+  ['requires_approval', { type: 'requires_approval', approval: { reason: 'PII export' } }],
 ];
 
 const PERMITS: Decision['decision'][] = ['allow', 'custom'];
@@ -55,6 +56,12 @@ describe('isPermissive', () => {
     // cannot carry the limit, so a caller who saw `true` would proceed at an
     // unbounded rate — failing open on the one effect that exists to bound it.
     expect(isPermissive('throttle')).toBe(false);
+  });
+
+  it('treats requires_approval as not a permission', () => {
+    // Permitted only once a human acts. Until then the answer to "may I
+    // proceed" is no, and a boolean that said yes would skip the human.
+    expect(isPermissive('requires_approval')).toBe(false);
   });
 });
 

@@ -122,7 +122,7 @@ Each counter is keyed by:
 |---|---|
 | `policyKey` | `login-protection` |
 | `ruleId` | `deny-after-five` |
-| `decision` | `allow`, `deny`, `kill_switch`, `throttle`, `custom` |
+| `decision` | `allow`, `deny`, `kill_switch`, `requires_approval`, `throttle`, `custom` |
 | `reason` | `rule` or `default` |
 | `bundleVersion` | `41` |
 

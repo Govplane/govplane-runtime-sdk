@@ -9,7 +9,8 @@ Eliminate 'magic ifs' and control your application in a predictable, controlled,
 npm install @govplane/runtime-sdk
 ```
 
-Zero runtime dependencies. Node.js 20.19 or later.
+Zero runtime dependencies. Node.js 22.23.4+, 24.22.1+ or 26.12.1+ — the
+releases that fix [CVE-2026-111497](#nodejs-versions).
 
 ## ESM and CommonJS
 
@@ -20,8 +21,8 @@ import { createLocalClient } from '@govplane/runtime-sdk';        // ESM
 const { createLocalClient } = require('@govplane/runtime-sdk');   // CommonJS
 ```
 
-`require()` of an ES module is supported from Node 20.19 and 22.12 onward, which
-is why those are the floor. There is no separate CommonJS build on purpose: a
+`require()` of an ES module works without flags on every Node.js release the
+SDK accepts. There is no separate CommonJS build on purpose: a
 package that ships both can end up loaded twice in one process, and then classes
 are no longer shared — an error thrown by one copy fails an `instanceof` check
 against the other. With a single file that cannot happen, and the SDK's error
@@ -43,6 +44,27 @@ async function start() {
 
 TypeScript users compiling to CommonJS need TypeScript 5.8 or later with
 `"module": "nodenext"` for `require()` of an ES module to typecheck.
+
+## Node.js versions
+
+| Line | Minimum |
+|---|---|
+| 22.x | 22.23.4 |
+| 24.x | 24.22.1 |
+| 26.x | 26.12.1 |
+
+These are the 21 October 2026 security releases, which fix
+[CVE-2026-111497](https://nodejs.org/en/blog/vulnerability/), a remote code
+execution flaw in Node.js's Brotli decompression. The remote client and the observability transport use the
+global `fetch`, which decompresses a `Content-Encoding: br` response
+automatically. On an unpatched runtime, a response from a hostile or
+intercepted endpoint can therefore reach the vulnerable code without any
+Brotli call of yours. Node.js 20, 25 and older lines are end of life and will
+not receive a fix, so the SDK does not support them.
+
+The SDK does not check the version at runtime. `engines` declares the range,
+so set `engine-strict=true` in your `.npmrc` if you want installs on other
+versions to fail.
 
 ## Two ways in
 
@@ -116,18 +138,34 @@ construction, so `evaluate()` can never be called against nothing.
 ## Decisions
 
 ```ts
-{ decision: 'allow' | 'deny' | 'kill_switch' | 'throttle' | 'custom',
-  reason: 'rule' | 'default',
+{ decision: 'allow' | 'deny' | 'kill_switch' | 'requires_approval' | 'throttle' | 'custom',
+  reason: 'rule' | 'default' | 'signal_missing',
   policyKey?: string,
   ruleId?: string }
 ```
 
 `ruleId` is present when a rule decided it, and absent when a policy default
-did. Effect precedence is `kill_switch > deny > throttle > allow > custom`, then
+did. Effect precedence is
+`kill_switch > deny > requires_approval > throttle > allow > custom`, then
 priority descending — a `kill_switch` at priority 1 beats a `deny` at 100.
 
 When nothing matches and no policy offers a default, the decision is
-**deny by default**.
+**deny by default**. `reason: 'signal_missing'` means the bundle was never
+consulted, because a signal the client declared it depends on was not supplied
+— see [Required signals](#required-signals).
+
+`requires_approval` gates an action on a human. It outranks anything that
+would have let the action proceed, and carries whatever the rule said about
+the approval it wants:
+
+```ts
+{ decision: 'requires_approval', reason: 'rule', policyKey: 'data-handling', ruleId: 'r_export',
+  approval?: { reason?: string, approvers?: string[], expiresInSeconds?: number } }
+```
+
+The SDK enforces nothing about `approval`: it is the rule's description of the
+gate, and routing, waiting and expiry are the host's — the same relationship
+the SDK has with a throttle. A policy default may be `requires_approval` too.
 
 ### Shorter answers
 
@@ -148,12 +186,15 @@ The return type follows the option, so none of these need narrowing.
 | `custom` | `true` | `1` |
 | `deny` | `false` | `0` |
 | `kill_switch` | `false` | `0` |
+| `requires_approval` | **`false`** | **`0`** |
 | `throttle` | **`false`** | **`0`** |
 
 `throttle` reduces to false even though it permits the action. A boolean cannot
 carry the limit, so a caller who saw `true` would proceed at an unbounded rate —
 failing open on the one effect whose purpose is to bound it. **If you act on
 throttles, read the full decision** and use `decision.throttle`.
+`requires_approval` is false for the same reason: the action is permitted only
+once someone has approved it, and a boolean that said `true` would skip them.
 
 All three are lossy by design: a kill switch's service, a custom effect's value
 and a throttle's window are only on the full object. Set at most one — setting
@@ -232,6 +273,13 @@ materialised by Govplane Cloud are signed in a validated HSM. If that
 distinction matters to you, it has to come from your own key management — not
 from `signature.algorithm`.
 
+The same honesty applies to [decision records](#decision-records) with
+`chain: true`. A hash chain proves that a *stored* sequence of records was not
+altered or thinned after the fact. It proves nothing about the process that
+wrote it: whoever controls that process can write a valid chain of anything.
+Chaining is tamper-evident, not tamper-proof. Non-repudiation needs a signing
+key the host does not hold, which is a Govplane Cloud capability.
+
 ## Configuration
 
 ### Context validation
@@ -255,6 +303,90 @@ The engine ships a seven-key sample policy. Enforcing it by default would reject
 the very keys your own rules read, so a client enforces a policy only when you
 pin one. Pin your real key set and it is enforced — including the PII-name
 heuristic, which is worth having.
+
+### Required signals
+
+A policy for an AI system acts on measurements of it — a PII classifier's
+score, an injection detector's verdict. Those arrive as ordinary numeric
+context keys, and a rule such as `piiScore > 0.8 → deny` reads them like any
+other. The problem is what happens when the score is *absent*: a comparison
+against a missing key is false, the rule does not match, and the request
+proceeds. That is a fail-open path nobody chose.
+
+Declaring the dependency closes it:
+
+```ts
+await createLocalClient({
+  bundlePath: './policy-bundle.json',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey },
+  engine: {
+    signals: {
+      required: [
+        { signal: 'piiScore', when: { service: 'agent' } },   // scoped to a target
+        'injectionScore',                                     // every target
+      ],
+      onMissing: 'deny',   // 'deny' | 'kill_switch' | 'allow' | 'throw'
+    },
+  },
+});
+
+govplane.evaluate({ target, context: { tenant: 'acme' } });
+// { decision: 'deny', reason: 'signal_missing', missingSignals: ['piiScore', 'injectionScore'] }
+```
+
+A signal is present when it is a finite number. `0` is present; `NaN`,
+`Infinity`, `null` and `'0.87'` are not. `when` names any of `service`,
+`resource` and `action`, and an omitted field means any. The check runs before
+any policy is consulted and applies equally to a rule addressed by name, so
+naming the rule is not a way around it. `onMissing` defaults to `deny`;
+`'throw'` raises `SignalMissingError` (`SIGNAL_MISSING`). `status().signals`
+reports what is declared.
+
+Confidence is just another signal, and a fail-closed threshold on it is just a
+rule: `{ "if": { "piiConfidence": { "lt": 0.6 } }, "effect": "deny" }`. See
+[`docs/ai-signals.md`](docs/ai-signals.md) for the pattern end to end.
+
+### Decision records
+
+`evaluate()` already returns `policyKey` and `ruleId`. A record ties that to
+the bundle that produced it and a timestamp, and hands it to a sink you
+provide — so the claim *"this action was blocked by rule `r_pii_export` in
+policy `data-handling`, from bundle `sha256:a91f…`, at 14:02:11Z"* is produced
+by the SDK rather than assembled by every host differently.
+
+```ts
+await createLocalClient({
+  bundlePath: './policy-bundle.json',
+  verify: { algorithm: 'ECDSA_SHA_256', publicKey },
+  record: {
+    sink: (records) => logger.info({ records }, 'govplane decisions'),
+    include: { context: ['piiScore', 'injectionScore', 'tenant'] },
+    batch: { maxRecords: 100, maxDelayMs: 1000 },
+    sample: { rate: 0.05, always: ['deny', 'kill_switch', 'requires_approval'] },
+    chain: true,
+  },
+});
+
+await govplane.flushRecords();   // before exit, if losing the tail is unacceptable
+govplane.close();                // flushes too, with a bounded wait
+```
+
+The sink is called outside `evaluate()`, in batches, and never inline. A sink
+that throws or rejects is reported through `onError` with code
+`RECORD_SINK_ERROR` and cannot affect the decision that was already returned.
+The queue is bounded; past it, `overflow` applies (`drop-oldest` by default)
+and every drop is counted in `status().records.dropped` and visible as a gap
+in `seq`. Nothing is recorded unless `record` is configured.
+
+**No context value is recorded unless its key is named in `include.context`.**
+There is no wildcard and no default set. `contextKeysPresent` always lists the
+key *names* supplied, so a record can show that a score was supplied without
+recording it. Naming a key the PII heuristic flags, while a context policy
+that blocks such keys is in force, is an `INVALID_CONFIGURATION` at
+construction.
+
+Record schema, sink patterns and chain verification:
+[`docs/decision-records.md`](docs/decision-records.md).
 
 ### Watching for changes
 
@@ -382,9 +514,12 @@ Every error carries a stable `code`:
 | `BUNDLE_SIGNATURE_ALGORITHM_UNSUPPORTED` | Not acceptable from this source |
 | `BUNDLE_SIGNATURE_ALGORITHM_REMOVED` | Ed25519 |
 | `BUNDLE_SIGNATURE_CONFIG_ERROR` | Malformed key material |
-| `INVALID_CONFIGURATION` | The client cannot be built as configured |
+| `INVALID_CONFIGURATION` | The client cannot be built as configured — including a malformed `record` or `engine.signals` block, or `include.context` naming a likely-PII key |
 | `INVALID_EVALUATE_OPTIONS` | More than one of `asBoolean`, `asBinary`, `effectOnly` |
 | `RULE_NOT_FOUND` | A rule or policy named in `evaluate` is not in the bundle |
+| `SIGNAL_MISSING` | A required signal was absent and `onMissing` is `throw` |
+| `RECORD_SINK_ERROR` | The record sink threw or rejected; passed to `onError` |
+| `INVALID_APPROVAL_DEFAULT` | A `requires_approval` default whose `approval` is not an object |
 
 Validation codes match `govplane validate`, so a code in your application log
 means the same thing as a code in the CLI's output.

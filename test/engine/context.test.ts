@@ -92,7 +92,7 @@ describe('formatTrace', () => {
       rulesSeen: 3,
       matched: winner ? 1 : 0,
       considered: {
-        kill_switch: 0, deny: 1, throttle: 0, allow: 0, custom: 0,
+        kill_switch: 0, deny: 1, requires_approval: 0, throttle: 0, allow: 0, custom: 0,
       },
     },
     ...(winner

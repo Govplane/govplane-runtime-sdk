@@ -111,6 +111,27 @@ describe('createRemoteClient', () => {
     client.close();
   });
 
+  it('forwards record and onDecision to the client', async () => {
+    const { impl } = stubFetch([{ body: signEcdsa(bundle()), headers: { etag: '"abc"' } }]);
+    const seen: string[] = [];
+    const records: unknown[] = [];
+    const client = await createRemoteClient({
+      ...BASE,
+      fetchImpl: impl,
+      onDecision: (d) => { seen.push(d.decision); },
+      record: { sink: (batch) => { records.push(...batch); } },
+    });
+
+    client.evaluate({ target: TARGET, context: { failedAttempts: 6 } });
+    await client.flushRecords();
+    expect(seen).toEqual(['deny']);
+    expect(records).toHaveLength(1);
+    expect(records[0])
+      .toMatchObject({ bundle: { origin: 'remote', signature: { verified: true } } });
+    expect(client.status().records).toMatchObject({ enabled: true, emitted: 1 });
+    client.close();
+  });
+
   it('sends the runtime key and scope', async () => {
     const { impl, calls } = stubFetch([{ body: signEcdsa(bundle()) }]);
     const client = await createRemoteClient({ ...BASE, fetchImpl: impl });

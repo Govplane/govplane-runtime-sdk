@@ -19,6 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          check-latest: true
           cache: npm
 
       - name: Install dependencies
@@ -37,8 +38,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Only lines with a fix for CVE-2026-111497. `check-latest` stops a runner's
+      # cached, older patch release from being used in place of the patched one.
       matrix:
-        node: ['20', '22', '24']
+        node: ['22', '24', '26']
 
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +49,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           cache: npm
 
       - name: Install dependencies
@@ -62,6 +66,13 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Recording must not turn a memory lookup into a measurable cost. The
+      # script prints the RFC's design target and fails only on a regression
+      # well beyond it, so a busy runner does not fail the build on noise.
+      - name: Benchmark decision-record overhead
+        if: matrix.node == '22'
+        run: node bench/records.bench.mjs
 
       # The published package must be importable and must verify a bundle.
       # A build that type-checks but cannot load is still broken.

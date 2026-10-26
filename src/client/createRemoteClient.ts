@@ -128,6 +128,7 @@ export const createRemoteClient = async (
     ...(config.trace === undefined ? {} : { trace: config.trace }),
     ...(config.onError === undefined ? {} : { onError: config.onError }),
     ...(config.onDecision === undefined ? {} : { onDecision: config.onDecision }),
+    ...(config.record === undefined ? {} : { record: config.record }),
   };
 
   /**

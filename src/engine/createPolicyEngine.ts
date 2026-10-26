@@ -4,8 +4,11 @@ import type {
 } from "./types.js";
 import { isRuleInput } from "./types.js";
 import { shapeDecision } from "./decisionShape.js";
-import { RuleNotFoundError } from "../errors/errors.js";
+import { RuleNotFoundError, SignalMissingError } from "../errors/errors.js";
 import type { ContextPolicy } from "./context.js";
+import { targetMatch } from "./target.js";
+import type { SignalsConfig, NormalizedSignals } from "./signals.js";
+import { normalizeSignals, findMissingSignals, signalMissingDecision } from "./signals.js";
 import { validateContext, DEFAULT_CONTEXT_POLICY } from "./context.js";
 import { evalWhen } from "./when.js";
 import type { TraceOptions, DecisionWithOptionalTrace, TraceSink, TraceSinkAsync, TraceQueueDropPolicy } from "./types.js";
@@ -78,6 +81,14 @@ interface EngineOpts {
    * silently swallowed and `parsedValue` is left undefined.
    */
   parseCustomEffect?: boolean;
+
+  /**
+   * Context keys the policies depend on, and what to do when one is missing.
+   *
+   * Validated once here; a malformed block is an `INVALID_CONFIGURATION` at
+   * construction rather than a requirement that quietly never applied.
+   */
+  signals?: SignalsConfig;
 }
 
 type EvaluateInput = PolicyEngineEvaluateInput;
@@ -169,10 +180,6 @@ interface Match {
   effect: any;
 }
 
-function targetMatch(a: Target, b: Target) {
-  return a.service === b.service && a.resource === b.resource && a.action === b.action;
-}
-
 function byRuleOrder(a: Match, b: Match) {
   // priority desc, policyKey asc, ruleId asc
   const pr = (Number(b.priority) || 0) - (Number(a.priority) || 0);
@@ -214,6 +221,10 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
     Number.isFinite(opts.traceDefaults?.budget?.windowMs) ? (opts.traceDefaults!.budget!.windowMs) : 60_000,
   );
 
+  const signals: NormalizedSignals | undefined = opts.signals === undefined
+    ? undefined
+    : normalizeSignals(opts.signals);
+
   // Initialize trace dispatcher if async sink provided
   const dispatcher =
   opts.traceSinkAsync
@@ -245,7 +256,7 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
             policiesSeen: 0,
             rulesSeen: 0,
             matched: 0,
-            considered: { kill_switch: 0, deny: 0, throttle: 0, allow: 0, custom: 0 },
+            considered: { kill_switch: 0, deny: 0, requires_approval: 0, throttle: 0, allow: 0, custom: 0 },
           },
           rules: [] as any[],
         }
@@ -278,8 +289,34 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
       traceBase!.target = selection.target;
     }
 
+    // Required signals are checked here and not earlier, on purpose. Later
+    // than the missing-bundle denial, so that `onMissing: 'allow'` can never
+    // turn "no bundle" into a permission. Later than rule resolution, so that a
+    // requirement scoped to a service gates a rule whether it was addressed by
+    // target or by name — otherwise naming the rule would be a way around it.
+    // And before any policy is consulted, because the whole point is that a
+    // policy which depends on a signal it did not receive has no answer to give.
+    if (signals !== undefined) {
+      const effectiveTarget = selection !== null ? selection.target : target!;
+      const missing = findMissingSignals(signals, effectiveTarget, ctx);
+      if (missing.length) {
+        if (signals.onMissing === "throw") {
+          throw new SignalMissingError(
+            `Required signal${missing.length === 1 ? "" : "s"} missing: ${missing.join(", ")}.`,
+            { missingSignals: missing, target: effectiveTarget },
+          );
+        }
+        const decision = signalMissingDecision(signals.onMissing, missing, effectiveTarget);
+        if (!wantTrace) return decision;
+        // No rule was consulted, so the summary stays at zero and there is no
+        // winner: the trace says truthfully that the bundle was never asked.
+        return { ...decision, trace: { ...traceBase!, winner: undefined } };
+      }
+    }
+
     const kills: Match[] = [];
     const denies: Match[] = [];
+    const approvals: Match[] = [];
     const throttles: Match[] = [];
     const allows: Match[] = [];
     const customs: Match[] = [];
@@ -430,6 +467,9 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
         } else if (effectType === "deny") {
           denies.push(m);
           if (wantTrace) traceBase!.summary.considered.deny += 1;
+        } else if (effectType === "requires_approval") {
+          approvals.push(m);
+          if (wantTrace) traceBase!.summary.considered.requires_approval += 1;
         } else if (effectType === "throttle") {
           throttles.push(m);
           if (wantTrace) traceBase!.summary.considered.throttle += 1;
@@ -464,6 +504,13 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
             syntheticEffect = { type: "throttle", throttle: defaults.throttle };
           } else if (defEffectType === "kill_switch" && defaults.killSwitch) {
             syntheticEffect = { type: "kill_switch", killSwitch: defaults.killSwitch };
+          } else if (defEffectType === "requires_approval") {
+            // The descriptor is optional on a default; anything that is not an
+            // object is dropped rather than passed through as a surprise.
+            const { approval } = defaults;
+            syntheticEffect = approval && typeof approval === "object" && !Array.isArray(approval)
+              ? { type: "requires_approval", approval }
+              : { type: "requires_approval" };
           } else if (defEffectType === "allow" || defEffectType === "deny") {
             syntheticEffect = { type: defEffectType };
           }
@@ -477,6 +524,9 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
             } else if (defEffectType === "deny") {
               denies.push(dm);
               if (wantTrace) traceBase!.summary.considered.deny += 1;
+            } else if (defEffectType === "requires_approval") {
+              approvals.push(dm);
+              if (wantTrace) traceBase!.summary.considered.requires_approval += 1;
             } else if (defEffectType === "throttle") {
               throttles.push(dm);
               if (wantTrace) traceBase!.summary.considered.throttle += 1;
@@ -492,7 +542,7 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
       }
     }
 
-    // Precedence: kill_switch > deny > throttle(strictest) > allow > custom > deny-by-default
+    // Precedence: kill_switch > deny > requires_approval > throttle(strictest) > allow > custom > deny-by-default
     if (kills.length) {
       const w = kills.sort(byRuleOrder)[0]!;
       const isDefault = w.ruleId === "__default__";
@@ -530,6 +580,31 @@ export function createPolicyEngine(opts: EngineOpts): PolicyEngine {
         trace: {
           ...traceBase!,
           winner: { policyKey: w.policyKey, ruleId: w.ruleId, effectType: "deny", priority: w.priority },
+        },
+      };
+    }
+
+    // requires_approval sits just below deny: an outright refusal still wins,
+    // but a gate outranks any rule that would have let the action proceed,
+    // throttled or not. An action that needs a human must never slip through
+    // because another rule was merely permissive.
+    if (approvals.length) {
+      const w = approvals.sort(byRuleOrder)[0]!;
+      const isDefault = w.ruleId === "__default__";
+      const decision: Decision = {
+        decision: "requires_approval",
+        reason: isDefault ? "default" : "rule",
+        policyKey: w.policyKey,
+        ruleId: isDefault ? undefined : w.ruleId,
+        ...(w.effect.approval === undefined ? {} : { approval: w.effect.approval }),
+      };
+
+      if (!wantTrace) return decision;
+      return {
+        ...decision,
+        trace: {
+          ...traceBase!,
+          winner: { policyKey: w.policyKey, ruleId: w.ruleId, effectType: "requires_approval", priority: w.priority },
         },
       };
     }

@@ -81,6 +81,23 @@ export class RuleNotFoundError extends GovplaneError {
 }
 
 /** Configuration that cannot produce a working client. */
+/**
+ * A required signal was absent and the client asked for an exception.
+ *
+ * Only ever thrown under `engine.signals.onMissing: 'throw'`. The other modes
+ * answer with a decision instead, which is the posture most hosts want: the
+ * absence of a classifier score is a policy outcome, not a crash.
+ */
+export class SignalMissingError extends GovplaneError {
+  readonly missingSignals: string[];
+
+  constructor(message: string, details: { missingSignals: string[]; target: unknown }) {
+    super(message, 'SIGNAL_MISSING', details);
+    this.name = 'SignalMissingError';
+    this.missingSignals = details.missingSignals;
+  }
+}
+
 export class ConfigurationError extends GovplaneError {
   constructor(message: string, code = 'INVALID_CONFIGURATION', details?: unknown) {
     super(message, code, details);

@@ -31,7 +31,7 @@ export interface ValidateOptions {
   scope?: 'required' | 'optional';
 }
 
-const EFFECT_TYPES = ['allow', 'deny', 'kill_switch', 'throttle', 'custom'];
+const EFFECT_TYPES = ['allow', 'deny', 'kill_switch', 'requires_approval', 'throttle', 'custom'];
 
 const CONDITION_OPERATORS = [
   'eq', 'neq', 'ne', 'gt', 'gte', 'lt', 'lte', 'and', 'or', 'not', 'in', 'exists',
@@ -159,6 +159,17 @@ const validateEffect = (effect: unknown, path: string, issues: ValidationIssue[]
       message: 'A custom effect requires a non-empty value.',
     });
   }
+
+  // The descriptor is optional, but when present it has to be something the
+  // host can read fields from. Its fields are not validated here: the runtime
+  // passes them through untouched, so their meaning belongs to the host.
+  if (type === 'requires_approval' && effect.approval !== undefined && !isRecord(effect.approval)) {
+    issues.push({
+      code: 'INVALID_RULE_EFFECT',
+      path: `${path}.approval`,
+      message: 'approval, when present, must be an object.',
+    });
+  }
 };
 
 const validateDefaults = (defaults: unknown, path: string, issues: ValidationIssue[]): void => {
@@ -189,6 +200,18 @@ const validateDefaults = (defaults: unknown, path: string, issues: ValidationIss
         message: 'A kill_switch default requires killSwitch.service.',
       });
     }
+  }
+
+  if (
+    effect === 'requires_approval'
+    && defaults.approval !== undefined
+    && !isRecord(defaults.approval)
+  ) {
+    issues.push({
+      code: 'INVALID_APPROVAL_DEFAULT',
+      path: `${path}.approval`,
+      message: 'A requires_approval default may carry approval, and it must be an object.',
+    });
   }
 
   if (effect === 'throttle') {

@@ -69,6 +69,22 @@
           "value": "MEYCIQCa5BuvIpnEBWsmzvHJB/pUKIXZir+0T3/WyE4+UnX0HQIhAPisI2nk62npZqwWMq969UUACgRzpMfKIvZjggmBOZwa"
         }
       }
+    },
+    "requires-approval": {
+      "canonicalUtf8": "{\"env\":\"prod\",\"orgId\":\"org_test\",\"policies\":[{\"activeVersion\":1,\"defaults\":{\"effect\":\"requires_approval\"},\"policyKey\":\"a-approval-default\",\"rules\":[]},{\"activeVersion\":2,\"defaults\":{\"effect\":\"allow\"},\"policyKey\":\"b-approval-rule\",\"rules\":[{\"effect\":{\"approval\":{\"approvers\":[\"cfo\",\"ciso\"],\"expiresInSeconds\":3600,\"reason\":\"wire above 10k\"},\"type\":\"requires_approval\"},\"id\":\"gate-large-transfers\",\"priority\":10,\"status\":\"active\",\"target\":{\"action\":\"create\",\"resource\":\"transfer\",\"service\":\"payments\"},\"when\":{\"op\":\"gt\",\"path\":\"ctx.amount\",\"value\":10000}}]}],\"projectId\":\"proj_test\",\"schemaVersion\":1}",
+      "canonicalSha256Hex": "66d26c674de856fcf5e9d0059e0c85a807c500599a24a6902c7847acbdf2d509",
+      "checksum": "sha256:66d26c674de856fcf5e9d0059e0c85a807c500599a24a6902c7847acbdf2d509",
+      "byteLength": 599,
+      "signatures": {
+        "HMAC_SHA256": {
+          "keyId": "test-hmac-key",
+          "value": "8280ea366b6b2c7a730bc5f4522482ddf94d6d72ac59ef4b0d022b74e30ca7c4"
+        },
+        "ECDSA_SHA_256": {
+          "keyId": "test-ecdsa-key",
+          "value": "MEUCIQDThsOcR5SCUf0MTdUQcfqyKjWAtKfQjz/XGcju5LwKYQIgeMRnrgZ3iHJFoldAHyYiwtR/rbUb49fWQt55rWaA1Tk="
+        }
+      }
     }
   }
 }

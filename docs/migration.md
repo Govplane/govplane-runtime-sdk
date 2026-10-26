@@ -154,3 +154,24 @@ Govplane account.
 8. Run your policy tests. If a signature that "worked" in 1.x now fails, the
    bundle was not signed over the bytes 1.x was checking — re-sign it with the
    current CLI.
+
+---
+
+## 2.3.0
+
+**Check your Node.js version first.** 2.3.0 requires 22.23.4+, 24.22.1+ or
+26.12.1+, the releases that fix CVE-2026-111497 (Brotli decompression). If you
+run Node.js 20 or 25, move to 22 or 24 before upgrading the SDK — those lines
+will not receive the fix, and staying on 2.2.x does not protect you from it.
+Run `node --version` to see which release you are on.
+
+Apart from that, no migration needed. Required signals, decision records and
+the `requires_approval` effect are all opt-in and absent by default. Two
+things are worth knowing:
+
+- `Decision['reason']` gained `'signal_missing'`, and `Decision['decision']`
+  gained `'requires_approval'`. Exhaustive `switch` statements over either will
+  want a case for the new member.
+- A bundle that uses the `requires_approval` effect fails validation on
+  `@govplane/runtime-sdk` 2.2.x and earlier (`INVALID_RULE_EFFECT`). Upgrade
+  every runtime that will load such a bundle before publishing it.

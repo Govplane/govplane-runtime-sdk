@@ -5,6 +5,145 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-09-20
+
+Additive, apart from the supported Node.js versions (see *Security* below).
+Every existing call site behaves exactly as it did in 2.2.1, and nothing below
+is active unless you configure it. The one typing change — the `reason` and
+`decision` unions each gain a member — is why this is a minor rather than a
+patch.
+
+### Security
+
+- **Node.js 22.23.4, 24.22.1 or 26.12.1 is now the minimum.** These are the
+  21 October 2026 security releases, which fix CVE-2026-111497, a remote code
+  execution flaw in Node.js's Brotli decompression. `RemoteBundleSource` and
+  the observability transport use the global `fetch`, which decompresses a
+  `Content-Encoding: br` response automatically. On an unpatched runtime, a
+  hostile or intercepted endpoint could therefore reach the vulnerable code
+  through the SDK, with no Brotli call in the host's code. The SDK's own code is
+  not at fault and has not changed; the flaw is in the runtime underneath it.
+
+  `engines` is now `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1`. Node.js 20
+  (end of life on 30 April 2026) and 25 (end of life on 1 June 2026) will not
+  receive a fix and are dropped, as are earlier lines. Strictly, dropping a
+  runtime is a breaking change. It ships in a minor release because no fixed
+  release exists on those lines, so staying on them is not a safe option. A
+  local client on a local bundle never makes a network request, but it is
+  dropped all the same: one supported range is simpler than a range per feature.
+  CI now tests 22, 24 and 26, and always uses the latest patch release.
+
+This release is what lets the SDK be presented as an enforcement layer for AI
+systems, per the decision records and signals RFC. It does not classify,
+detect or judge anything; it consumes scores, enforces what happens when a
+score is missing, gates actions on people, and writes down what it decided.
+
+### Added
+
+- **`requires_approval` effect.** First-class human-in-the-loop gating, with
+  precedence `kill_switch > deny > requires_approval > throttle > allow >
+  custom`. An outright refusal still wins; a gate outranks anything that would
+  have let the action proceed, throttled or not — an action that needs a human
+  must never slip through because another rule was merely permissive.
+
+  ```json
+  { "type": "requires_approval",
+    "approval": { "reason": "PII export", "approvers": ["security"], "expiresInSeconds": 900 } }
+  ```
+
+  The `approval` descriptor is optional and passed through untouched; the SDK
+  enforces nothing about it, exactly as it enforces nothing about a throttle's
+  limit. It is valid as a policy default. Under `asBoolean` and `asBinary` it
+  is `false` and `0`: permitted only once someone has acted.
+
+  **This is a bundle-format addition.** A bundle using the effect fails
+  validation on 2.2.x and earlier with `INVALID_RULE_EFFECT`. Upgrade every
+  runtime that will load such a bundle before publishing it. A malformed
+  descriptor on a default is `INVALID_APPROVAL_DEFAULT`.
+
+- **Required signals.** A policy that reads `piiScore > 0.8` silently allowed
+  when `piiScore` was absent, because a comparison against a missing key is
+  false. That was a fail-open path nobody declared. `engine.signals` declares
+  the dependency and what happens when it is not met:
+
+  ```ts
+  engine: {
+    signals: {
+      required: [{ signal: 'piiScore', when: { service: 'agent' } }, 'injectionScore'],
+      onMissing: 'deny',   // 'deny' | 'kill_switch' | 'allow' | 'throw'
+    },
+  }
+  // → { decision: 'deny', reason: 'signal_missing', missingSignals: ['piiScore'] }
+  ```
+
+  A signal is present when it is a finite number — `0` counts, `NaN` does not.
+  The check runs after context validation and after the missing-bundle
+  denial, so `onMissing: 'allow'` can never turn "no bundle" into a
+  permission, and it applies to a rule addressed by name using that rule's own
+  target, so naming the rule is not a way around it. `'throw'` raises
+  `SignalMissingError` (`SIGNAL_MISSING`). `status().signals` reports what is
+  declared. A malformed block is `INVALID_CONFIGURATION` at construction.
+
+- **Decision records.** `evaluate()` returned `policyKey` and `ruleId` but tied
+  them to nothing; every host wrote the same audit glue differently. `record`
+  hands the SDK's own account of each decision — with the checksum, version
+  and signature status of the bundle that made it — to a sink you provide:
+
+  ```ts
+  record: {
+    sink: (records) => logger.info({ records }, 'govplane decisions'),
+    include: { context: ['piiScore', 'tenant'] },
+    batch: { maxRecords: 100, maxDelayMs: 1000 },
+    sample: { rate: 0.05, always: ['deny', 'kill_switch', 'requires_approval'] },
+    chain: true,
+  }
+  ```
+
+  The sink runs on a microtask or timer, never inside `evaluate()`. A sink
+  that throws or rejects is reported through `onError` with code
+  `RECORD_SINK_ERROR` and cannot touch the decision already returned. The
+  queue is bounded (`maxQueue`, default four batches) with an explicit
+  `overflow` policy, and every drop is counted in `status().records.dropped`
+  and visible as a gap in `seq`. `flushRecords()` delivers everything and
+  resolves when the sink has it; `close()` flushes with a two-second bound and
+  stays synchronous.
+
+  **Privacy.** Traces still carry no context values. Records carry a value
+  only for a key named in `include.context` — no wildcard, no default set —
+  and `contextKeysPresent` always lists key names only. Naming a key the PII
+  heuristic flags, while a context policy that blocks such keys is in force,
+  is `INVALID_CONFIGURATION` at construction. Nothing is recorded unless
+  `record` is configured.
+
+  **Chaining** (`chain: true`) links each record to the previous by SHA-256
+  over the same canonical form bundles use. It is tamper-evident, not
+  tamper-proof: it detects later modification of stored records and nothing
+  about the process that wrote them. `verifyRecordChain()` is exported for
+  whoever stores them, and reports a counted drop as `gap` rather than as
+  tampering. Signed records need a key the host does not hold — Cloud.
+
+  Overhead is measured by `bench/records.bench.mjs`, which runs in CI against
+  the RFC's budget: p99 under 5% (records) and 10% (chain) of the 100 µs an
+  evaluation has at 10k/s. On a laptop it adds about one microsecond.
+
+- `looksLikePiiKey`, `targetMatch`, `targetMatchesScope`, `hashRecord` and
+  `verifyRecordChain` are exported, with the `DecisionRecord`, `RecordConfig`,
+  `SignalsConfig` and `ApprovalDescriptor` types.
+
+### Fixed
+
+- **`createLocalClient` dropped `onDecision`.** 2.2.0 added the hook and
+  forwarded it on the remote path only. A local client now accepts it, and
+  `record`, exactly as a remote one does: both paths are one client.
+
+### Notes
+
+- `@types/node` follows the minimum line, `^22.19.0`.
+- `docs/decision-records.md` and `docs/ai-signals.md` are new;
+  `docs/migration.md` has a 2.3.0 section. The README's *Verification* section
+  now says what chaining does and does not prove, beside what a signature does
+  and does not prove.
+
 ## [2.2.1] - 2026-08-29
 
 ### Security

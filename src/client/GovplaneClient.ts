@@ -1,5 +1,12 @@
 import { createPolicyEngine } from '../engine/createPolicyEngine.js';
+import { shapeDecision } from '../engine/decisionShape.js';
+import { computeChecksum } from '../bundle/canonical.js';
+import { createRecorder, DISABLED_RECORD_STATUS } from '../records/recorder.js';
+import { validateRecordConfig } from '../records/validateRecordConfig.js';
+import type { BundleSnapshot, RecordConfig, RecordStatus } from '../records/types.js';
 import type { ContextPolicy } from '../engine/context.js';
+import type { SignalsConfig, SignalsOnMissing } from '../engine/signals.js';
+import { declaredSignalNames, normalizeSignals } from '../engine/signals.js';
 import type {
   Decision, DecisionWithOptionalTrace, EvaluateOptions, PolicyEngine, PolicyEngineEvaluateInput,
   StructuredTraceEvent, TraceOptions, TraceQueueDropPolicy,
@@ -21,6 +28,17 @@ export interface EngineOptions {
   contextPolicy?: ContextPolicy;
   /** JSON-parse custom effect values into `parsedValue`. */
   parseCustomEffect?: boolean;
+  /**
+   * Context keys the policies depend on — classifier scores, detector
+   * verdicts — and what evaluation returns when one is absent. See
+   * `docs/ai-signals.md`.
+   */
+  signals?: SignalsConfig;
+}
+
+export interface SignalsStatus {
+  required: string[];
+  onMissing: SignalsOnMissing;
 }
 
 export interface TraceOptionsConfig {
@@ -41,6 +59,10 @@ export interface ClientStatus {
   signature: { status: string; algorithm?: string | undefined; keyId?: string | undefined };
   policies: number;
   loadedAt: string;
+  /** Present only when `engine.signals` was configured. */
+  signals?: SignalsStatus;
+  /** Always present; `enabled: false` with zero counters when `record` is not configured. */
+  records: RecordStatus;
 }
 
 export interface GovplaneClient {
@@ -68,14 +90,35 @@ export interface GovplaneClient {
   status(): ClientStatus;
   /** Re-reads the source now, regardless of any watch or poll interval. */
   reload(): Promise<ClientStatus>;
+  /**
+   * Delivers every queued decision record to the sink and resolves once the
+   * sink has taken them. Resolves immediately when records are off. For hosts
+   * that want certainty before exit; `close()` flushes too, but with a bound.
+   */
+  flushRecords(): Promise<void>;
+  /**
+   * Stops watching or polling and flushes records with a bounded wait. Never
+   * blocks shutdown on a slow sink: call `flushRecords()` first if losing the
+   * tail is unacceptable.
+   */
   close(): void;
 }
 
 export interface ClientOptions {
   engine?: EngineOptions | undefined;
   trace?: TraceOptionsConfig | undefined;
-  /** Called when a background reload fails. The previous bundle stays in force. */
+  /**
+   * Called when a background reload fails (the previous bundle stays in
+   * force), and when a decision record sink throws or rejects (the error has
+   * code `RECORD_SINK_ERROR`; the decision already returned is unaffected).
+   */
   onError?: ((error: unknown) => void) | undefined;
+  /**
+   * Emit a record of every decision to a sink the application provides. Off
+   * unless configured: no queue, no timer, no counters. See
+   * `docs/decision-records.md`.
+   */
+  record?: RecordConfig | undefined;
   /**
    * Called with every decision, unsampled, before output shaping.
    *
@@ -128,6 +171,7 @@ const buildEngine = (
   ...(options.engine?.parseCustomEffect === undefined
     ? {}
     : { parseCustomEffect: options.engine.parseCustomEffect }),
+  ...(options.engine?.signals === undefined ? {} : { signals: options.engine.signals }),
   ...(options.trace?.defaults === undefined ? {} : { traceDefaults: options.trace.defaults }),
   ...(options.trace?.onDecisionTrace === undefined
     ? {}
@@ -143,6 +187,28 @@ const buildEngine = (
     ? {}
     : { onTraceSinkError: options.trace.onTraceError }),
   ...(options.onDecision === undefined ? {} : { onDecision: options.onDecision }),
+});
+
+/** How long `close()` waits for the sink before letting the process go. */
+const CLOSE_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * What a record says about the bundle that produced it.
+ *
+ * Computed once per load rather than once per evaluation: the checksum
+ * fallback hashes the canonical payload, which is not a per-decision cost.
+ */
+const snapshotOf = (loaded: LoadedBundle, origin: BundleOrigin): BundleSnapshot => ({
+  ...(loaded.bundle.bundleVersion === undefined ? {} : { version: loaded.bundle.bundleVersion }),
+  ...(loaded.bundle.generatedAt === undefined ? {} : { generatedAt: loaded.bundle.generatedAt }),
+  checksum: loaded.bundle.checksum ?? computeChecksum(loaded.bundle),
+  signature: {
+    ...(loaded.verification.signature.algorithm === undefined
+      ? {}
+      : { algorithm: loaded.verification.signature.algorithm }),
+    verified: loaded.verification.signature.status === 'verified',
+  },
+  origin,
 });
 
 /**
@@ -162,6 +228,22 @@ export const createClient = (
 
   const engine = buildEngine(() => current.bundle, options);
 
+  // Validated before anything else is built: a `record` block that names a
+  // key the PII heuristic flags must fail here, on line one, not at runtime.
+  const recorder = options.record === undefined
+    ? undefined
+    : createRecorder(validateRecordConfig(options.record, options.engine), {
+      onError: (error) => { options.onError?.(error); },
+    });
+  const { origin } = source.describe();
+  let snapshot: BundleSnapshot | undefined = recorder && snapshotOf(current, origin);
+
+  // Normalised again here purely for reporting; the engine validated it and
+  // threw on anything malformed before this line was reached.
+  const signals = options.engine?.signals === undefined
+    ? undefined
+    : normalizeSignals(options.engine.signals);
+
   const status = (): ClientStatus => {
     const description = source.describe();
     return {
@@ -173,12 +255,17 @@ export const createClient = (
       signature: current.verification.signature,
       policies: current.bundle.policies.length,
       loadedAt,
+      ...(signals === undefined
+        ? {}
+        : { signals: { required: declaredSignalNames(signals), onMissing: signals.onMissing } }),
+      records: recorder === undefined ? DISABLED_RECORD_STATUS : recorder.status(),
     };
   };
 
   const adopt = (loaded: LoadedBundle): void => {
     current = loaded;
     loadedAt = new Date().toISOString();
+    if (recorder) snapshot = snapshotOf(loaded, origin);
   };
 
   source.start?.({
@@ -190,19 +277,46 @@ export const createClient = (
     },
   });
 
-  return {
-    evaluate: ((input: PolicyEngineEvaluateInput, shape?: EvaluateOptions) => (
+  /**
+   * Recording sits here, at the client, and not in the engine or on
+   * `onDecision`. Here is where the bundle in force is known, and because the
+   * whole call is synchronous the snapshot a record carries is the one that
+   * answered — a reload between two calls lands cleanly on one side or the
+   * other. `evaluateWithTrace` runs the engine's core twice on a traced call;
+   * one record per call is only guaranteed by recording after it returns.
+   */
+  const evaluate: GovplaneClient['evaluate'] = recorder === undefined
+    ? ((input: PolicyEngineEvaluateInput, shape?: EvaluateOptions) => (
       engine.evaluate(input, shape)
-    )) as GovplaneClient['evaluate'],
-    evaluateWithTrace: (input, traceOptions) => engine.evaluateWithTrace(input, traceOptions),
+    )) as GovplaneClient['evaluate']
+    : ((input: PolicyEngineEvaluateInput, shape?: EvaluateOptions) => {
+      const decision = engine.evaluate(input);
+      recorder.observe(decision, input, snapshot!);
+      return shapeDecision(decision, shape);
+    }) as GovplaneClient['evaluate'];
+
+  const evaluateWithTrace: GovplaneClient['evaluateWithTrace'] = recorder === undefined
+    ? (input, traceOptions) => engine.evaluateWithTrace(input, traceOptions)
+    : (input, traceOptions) => {
+      const traced = engine.evaluateWithTrace(input, traceOptions);
+      recorder.observe(traced, input, snapshot!);
+      return traced;
+    };
+
+  return {
+    evaluate,
+    evaluateWithTrace,
     bundle: () => current.bundle,
     status,
     async reload() {
       adopt(await source.load());
       return status();
     },
+    flushRecords: () => (recorder === undefined ? Promise.resolve() : recorder.flush()),
     close() {
       source.stop();
+      // Ships what is queued, but never blocks shutdown on a slow sink.
+      void recorder?.close(CLOSE_FLUSH_TIMEOUT_MS);
     },
   };
 };
